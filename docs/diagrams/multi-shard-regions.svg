@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1120" viewBox="0 0 1120 1120" role="img" aria-labelledby="title desc">
+  <title id="title">OraCache master-master: несколько шардов и внешний control plane</title>
+  <desc id="desc">Оба региона принимают записи во все шарды. В каждом регионе по три реплики S1, S2 и S3 и по одному локальному лидеру на шард. Изменения передаются между регионами в обе стороны. Внешний control plane передаёт конфигурацию, размещение и команды, а data plane возвращает статусы групп, готовность и lag.</desc>
+  <defs>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #172b4d; }
+      .title { font-size: 28px; font-weight: 700; }
+      .subtitle { font-size: 18px; fill: #52627a; }
+      .region-title { font-size: 22px; font-weight: 700; }
+      .machine-title { font-size: 20px; font-weight: 600; text-anchor: middle; }
+      .process { font-size: 15px; fill: #64748b; text-anchor: middle; }
+      .replica { font-size: 18px; font-weight: 600; text-anchor: middle; }
+      .leader { fill: #ffffff; }
+      .empty { font-size: 17px; fill: #94a3b8; text-anchor: middle; }
+      .note { font-size: 18px; }
+      .flow { font-size: 20px; font-weight: 600; text-anchor: middle; }
+      .cp-title { font-size: 23px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+      .cp-note { font-size: 17px; fill: #e2e8f0; text-anchor: middle; }
+    </style>
+    <marker id="control-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
+    </marker>
+    <g id="machine">
+      <rect width="226" height="208" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+      <path d="M0 52 H226" stroke="#e2e8f0"/>
+    </g>
+    <rect id="s1-follower" width="194" height="36" rx="5" fill="#dbeafe" stroke="#60a5fa"/>
+    <rect id="s1-leader" width="194" height="36" rx="5" fill="#1d4ed8" stroke="#1d4ed8"/>
+    <rect id="s2-follower" width="194" height="36" rx="5" fill="#ffedd5" stroke="#fb923c"/>
+    <rect id="s2-leader" width="194" height="36" rx="5" fill="#c2410c" stroke="#c2410c"/>
+    <rect id="s3-follower" width="194" height="36" rx="5" fill="#dcfce7" stroke="#4ade80"/>
+    <rect id="s3-leader" width="194" height="36" rx="5" fill="#15803d" stroke="#15803d"/>
+  </defs>
+  <rect width="1120" height="1120" fill="#ffffff"/>
+  <text x="24" y="42" class="title">Master-master · несколько шардов</text>
+  <text x="24" y="74" class="subtitle">Цвет = шард. Блок = его реплика. Тёмный блок = лидер локальной группы.</text>
+  <rect x="208" y="96" width="704" height="80" rx="10" fill="#172b4d"/>
+  <text x="560" y="128" class="cp-title">Внешний CONTROL PLANE</text>
+  <text x="560" y="155" class="cp-note">Чёрный ящик · внутренняя реализация вне нашей части</text>
+  <path d="M240 176 V258" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#control-arrow)"/>
+  <text x="262" y="208" class="subtitle">Конфигурация, placement,</text>
+  <text x="262" y="234" class="subtitle">адреса peers и команды</text>
+  <path d="M880 260 V178" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#control-arrow)"/>
+  <text x="596" y="208" class="subtitle">Статусы групп, readiness,</text>
+  <text x="596" y="234" class="subtitle">лидеры и replication lag</text>
+  <rect x="8" y="260" width="1104" height="832" rx="14" fill="#ffffff" stroke="#94a3b8" stroke-dasharray="7 5"/>
+  <text x="24" y="290" class="region-title">Наш DATA PLANE · оба региона принимают записи</text>
+  <g transform="translate(0 208)">
+  <rect x="24" y="104" width="1072" height="278" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="48" y="136" class="region-title">Регион A</text>
+  <text x="208" y="136" class="subtitle">Полный набор S1 + S2 + S3 · локальные записи во все шарды</text>
+  <g transform="translate(48 154)">
+    <use href="#machine"/>
+    <text x="113" y="25" class="machine-title">Машина A1</text>
+    <text x="113" y="44" class="process">Процесс OraCache</text>
+    <use href="#s1-leader" x="16" y="60"/><text x="113" y="84" class="replica leader">S1 · LEADER</text>
+    <text x="113" y="130" class="empty">—</text>
+    <use href="#s3-follower" x="16" y="152"/><text x="113" y="176" class="replica">S3 · follower</text>
+  </g>
+  <g transform="translate(306 154)">
+    <use href="#machine"/>
+    <text x="113" y="25" class="machine-title">Машина A2</text>
+    <text x="113" y="44" class="process">Процесс OraCache</text>
+    <use href="#s1-follower" x="16" y="60"/><text x="113" y="84" class="replica">S1 · follower</text>
+    <use href="#s2-leader" x="16" y="106"/><text x="113" y="130" class="replica leader">S2 · LEADER</text>
+    <text x="113" y="176" class="empty">—</text>
+  </g>
+  <g transform="translate(564 154)">
+    <use href="#machine"/>
+    <text x="113" y="25" class="machine-title">Машина A3</text>
+    <text x="113" y="44" class="process">Процесс OraCache</text>
+    <use href="#s1-follower" x="16" y="60"/><text x="113" y="84" class="replica">S1 · follower</text>
+    <use href="#s2-follower" x="16" y="106"/><text x="113" y="130" class="replica">S2 · follower</text>
+    <use href="#s3-follower" x="16" y="152"/><text x="113" y="176" class="replica">S3 · follower</text>
+  </g>
+  <g transform="translate(822 154)">
+    <use href="#machine"/>
+    <text x="113" y="25" class="machine-title">Машина A4</text>
+    <text x="113" y="44" class="process">Процесс OraCache</text>
+    <text x="113" y="84" class="empty">—</text>
+    <use href="#s2-follower" x="16" y="106"/><text x="113" y="130" class="replica">S2 · follower</text>
+    <use href="#s3-leader" x="16" y="152"/><text x="113" y="176" class="replica leader">S3 · LEADER</text>
+  </g>
+
+  <text x="560" y="413" class="subtitle" text-anchor="middle">Двусторонняя доставка событий · подтверждения и повторная доставка</text>
+  <rect x="154" y="430" width="248" height="40" rx="6" fill="#dbeafe"/>
+  <text x="278" y="457" class="flow">S1: A ↔ B</text>
+  <rect x="436" y="430" width="248" height="40" rx="6" fill="#ffedd5"/>
+  <text x="560" y="457" class="flow">S2: A ↔ B</text>
+  <rect x="718" y="430" width="248" height="40" rx="6" fill="#dcfce7"/>
+  <text x="842" y="457" class="flow">S3: A ↔ B</text>
+
+  <rect x="24" y="490" width="1072" height="278" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="48" y="522" class="region-title">Регион B</text>
+  <text x="208" y="522" class="subtitle">Полный набор S1 + S2 + S3 · локальные записи во все шарды</text>
+  <g transform="translate(48 540)">
+    <use href="#machine"/>
+    <text x="113" y="25" class="machine-title">Машина B1</text>
+    <text x="113" y="44" class="process">Процесс OraCache</text>
+    <use href="#s1-leader" x="16" y="60"/><text x="113" y="84" class="replica leader">S1 · LEADER</text>
+    <text x="113" y="130" class="empty">—</text>
+    <use href="#s3-follower" x="16" y="152"/><text x="113" y="176" class="replica">S3 · follower</text>
+  </g>
+  <g transform="translate(306 540)">
+    <use href="#machine"/>
+    <text x="113" y="25" class="machine-title">Машина B2</text>
+    <text x="113" y="44" class="process">Процесс OraCache</text>
+    <use href="#s1-follower" x="16" y="60"/><text x="113" y="84" class="replica">S1 · follower</text>
+    <use href="#s2-leader" x="16" y="106"/><text x="113" y="130" class="replica leader">S2 · LEADER</text>
+    <text x="113" y="176" class="empty">—</text>
+  </g>
+  <g transform="translate(564 540)">
+    <use href="#machine"/>
+    <text x="113" y="25" class="machine-title">Машина B3</text>
+    <text x="113" y="44" class="process">Процесс OraCache</text>
+    <use href="#s1-follower" x="16" y="60"/><text x="113" y="84" class="replica">S1 · follower</text>
+    <use href="#s2-follower" x="16" y="106"/><text x="113" y="130" class="replica">S2 · follower</text>
+    <use href="#s3-follower" x="16" y="152"/><text x="113" y="176" class="replica">S3 · follower</text>
+  </g>
+  <g transform="translate(822 540)">
+    <use href="#machine"/>
+    <text x="113" y="25" class="machine-title">Машина B4</text>
+    <text x="113" y="44" class="process">Процесс OraCache</text>
+    <text x="113" y="84" class="empty">—</text>
+    <use href="#s2-follower" x="16" y="106"/><text x="113" y="130" class="replica">S2 · follower</text>
+    <use href="#s3-leader" x="16" y="152"/><text x="113" y="176" class="replica leader">S3 · LEADER</text>
+  </g>
+  <text x="24" y="803" class="note">Три блока одного цвета внутри региона = одна Raft-группа, кворум 2 из 3.</text>
+  <text x="24" y="833" class="note">Между регионами — отдельная доставка событий. Всего 6 групп и 18 реплик.</text>
+  <text x="24" y="863" class="subtitle">Raft остаётся внутри региона. Каждый локальный лидер принимает PUT и импорт из других регионов.</text>
+  </g>
+</svg>
