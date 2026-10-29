@@ -1,0 +1,188 @@
+// warmup.proto — прогрев ноды кеша.
+//
+// Модель по последним требованиям заказчика (ответы тимлида от 29.10):
+// версию назначает кеш, у ключа хранится несколько версий (по умолчанию 3),
+// TTL продлевается при чтении и ограничен потолком, Put и Delete полностью
+// реплицируются между регионами.
+//
+// Зачем прогрев, если есть репликация: репликация переносит только НОВЫЕ
+// изменения. Новая или перезапущенная нода пустая, и всё, что было записано
+// до её старта, она может взять только прогревом.
+//
+// УТОЧНИТЬ: прогрев переносом данных (как описано здесь) или проксированием
+// промахов (пустая нода при промахе спрашивает соседа, а не источник).
+//
+// ПРОЦЕСС ПРОГРЕВА С НУЛЯ (новая или перезапущенная нода):
+//
+//   1. STARTING. Нода подключается к потоку репликации, чтобы получать все
+//      Put и Delete, которые случатся во время прогрева. Тогда свежая запись
+//      не потеряется и не будет перезаписана старой из прогрева.
+//      Нода восстанавливает счётчик версий, чтобы не выдать уже использованный
+//      номер (УТОЧНИТЬ вместе со схемой нумерации версий).
+//   2. READY. Нода принимает запросы. Кеш пустой или почти пустой.
+//      УТОЧНИТЬ: идёт ли нода под трафик сразу после READY или только после
+//      окончания прогрева.
+//   3. Оператор (CLI или скрипт стенда) вызывает Warmup.StartWarmup на ноде-цели,
+//      указывая донора (нода другого региона или соседняя нода) и что греть:
+//      горячие ключи или всё содержимое.
+//   4. Цель открывает поток WarmupSource.StreamEntries у донора. Для каждого
+//      ключа приходят все его версии. Правила применения:
+//        * номера версий переносятся КАК ЕСТЬ, новые не назначаются;
+//        * версия, которой у цели нет, добавляется; которая есть — пропускается;
+//        * версия, удалённая у цели (Delete), не воскрешается;
+//        * после слияния у ключа остаются только последние N версий (лимит);
+//        * TTL НЕ продлевается: прогрев — не чтение. Берём expires_at и
+//          hard_expires_at донора, истёкшее пропускаем.
+//   5. Прогрев идёт с ограничением скорости, чтобы не мешать основной работе.
+//      Прогресс виден через GetWarmupStatus и метрики.
+//   6. Прогрев заканчивается, когда донор отдал все записи, вышел срок
+//      (deadline), набрали max_keys или кончилась память. Обрыв связи ->
+//      FAILED; можно продолжить с last_cursor.
+//
+// ПРОГРЕВ ШАРДА (ПОСЛЕ MVP — шардирования в MVP нет):
+//   новая нода берёт часть ключей (шард). Донор отдаёт только ключи, у которых
+//   hash(key) % shard_count == shard_index. Правила применения те же.
+
+syntax = "proto3";
+
+package cache.v1;
+
+option go_package = "github.com/OraCache/oracache/gen/cache/v1;cachev1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// ============================================================
+// Управление прогревом (вызывается на ноде-цели)
+// ============================================================
+
+service Warmup {
+  rpc StartWarmup(StartWarmupRequest) returns (StartWarmupResponse);
+  rpc GetWarmupStatus(GetWarmupStatusRequest) returns (WarmupStatus);
+  rpc CancelWarmup(CancelWarmupRequest) returns (WarmupStatus);
+}
+
+// ============================================================
+// Источник данных (вызывается на ноде-доноре)
+// ============================================================
+
+service WarmupSource {
+  // Поток ключей со всеми их версиями. Донор отдаёт снимок
+  // в порядке популярности (HOT_KEYS) или по ключам (FULL / SHARD).
+  rpc StreamEntries(StreamEntriesRequest) returns (stream WarmupEntry);
+}
+
+// ----- Что греть -----
+
+enum WarmupMode {
+  WARMUP_MODE_UNSPECIFIED = 0;
+  WARMUP_MODE_HOT_KEYS = 1;    // топ-N горячих ключей донора (по умолчанию)
+  WARMUP_MODE_FULL = 2;        // всё содержимое донора
+  WARMUP_MODE_SHARD = 3;       // только ключи одного шарда (после MVP)
+}
+
+// Шард задаётся остатком от деления хеша ключа (xxhash64).
+// В MVP шард один: shard_count = 1, shard_index = 0.
+message ShardSpec {
+  uint32 shard_count = 1;
+  uint32 shard_index = 2;      // 0 .. shard_count-1
+}
+
+// Ограничения, чтобы прогрев не мешал работе и не забил память.
+message WarmupLimits {
+  uint32 max_keys = 1;                    // 0 = без ограничения (по умолчанию 100 000 для HOT_KEYS)
+  uint32 rate_limit_per_sec = 2;          // ключей в секунду, по умолчанию 2 000
+  google.protobuf.Duration deadline = 3;  // по умолчанию 10 мин
+  double max_memory_fraction = 4;         // доля памяти под прогрев, по умолчанию 0.8
+}
+
+// ----- StartWarmup -----
+
+message StartWarmupRequest {
+  string source_address = 1;   // адрес WarmupSource донора, например "cache-b-1:50052"
+  WarmupMode mode = 2;
+  ShardSpec shard = 3;         // для WARMUP_MODE_SHARD
+  WarmupLimits limits = 4;
+
+  // Продолжить прерванный прогрев с этого места (из WarmupStatus.last_cursor).
+  bytes resume_cursor = 5;
+}
+
+message StartWarmupResponse {
+  string warmup_id = 1;
+}
+
+// ----- Статус -----
+
+enum WarmupState {
+  WARMUP_STATE_UNSPECIFIED = 0;
+  WARMUP_STATE_PENDING = 1;     // создан, ещё не подключились к донору
+  WARMUP_STATE_RUNNING = 2;
+  WARMUP_STATE_COMPLETED = 3;   // донор отдал всё или достигнут max_keys
+  WARMUP_STATE_FAILED = 4;      // обрыв связи, ошибка донора; можно продолжить с last_cursor
+  WARMUP_STATE_CANCELLED = 5;
+  WARMUP_STATE_TIMED_OUT = 6;   // истёк deadline
+}
+
+message GetWarmupStatusRequest {
+  string warmup_id = 1;
+}
+
+message CancelWarmupRequest {
+  string warmup_id = 1;
+}
+
+message WarmupStatus {
+  string warmup_id = 1;
+  WarmupState state = 2;
+  WarmupMode mode = 3;
+  ShardSpec shard = 4;
+
+  // Наблюдаемый результат прогрева.
+  uint64 keys_received = 5;       // ключей получено от донора
+  uint64 versions_applied = 6;    // версий положено в кеш
+  uint64 versions_skipped_existing = 7; // такая версия у цели уже была
+  uint64 versions_skipped_deleted = 8;  // версия у цели удалена — не воскрешаем
+  uint64 versions_skipped_expired = 9;  // версия у донора уже истекла
+  uint64 versions_skipped_no_memory = 10; // не поместилось
+  uint64 bytes_applied = 11;
+
+  google.protobuf.Timestamp started_at = 12;
+  google.protobuf.Timestamp finished_at = 13;
+  string error = 14;            // причина FAILED
+  bytes last_cursor = 15;       // для продолжения после обрыва
+}
+
+// ----- Поток записей -----
+
+message StreamEntriesRequest {
+  WarmupMode mode = 1;
+  ShardSpec shard = 2;
+  uint32 max_keys = 3;
+  bytes resume_cursor = 4;      // продолжить с места обрыва
+}
+
+// Один ключ со всеми его версиями у донора.
+message WarmupEntry {
+  string key = 1;
+  repeated WarmupVersion versions = 2;  // от новой к старой, не больше лимита версий
+
+  // Скользящий TTL общий для всех версий ключа (продлевается при Get).
+  // При прогреве НЕ продлевается — переносится как есть.
+  google.protobuf.Timestamp expires_at = 3;
+
+  bytes cursor = 4;             // позиция в потоке, для resume
+}
+
+message WarmupVersion {
+  uint64 rev = 1;               // номер, назначенный кешем; переносится как есть
+  bytes data = 2;               // упакованный Profile
+
+  // Потолок: после него версия удаляется, даже если её читают.
+  // УТОЧНИТЬ: отсчитывается от записи версии или от первой записи ключа.
+  google.protobuf.Timestamp hard_expires_at = 3;
+
+  // Версия удалена через Delete. Передаётся, чтобы цель не приняла
+  // эту версию позже из другого источника (репликация, повтор).
+  bool deleted = 4;
+}
