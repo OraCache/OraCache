@@ -1,6 +1,6 @@
 module github.com/OraCache/oracache
 
-go 1.22
+go 1.27.3
 
 require (
 	github.com/OraCache/oracache/gen v0.0.0

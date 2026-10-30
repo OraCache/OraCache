@@ -1,6 +1,6 @@
 module github.com/OraCache/oracache/gen
 
-go 1.22
+go 1.27.3
 
 require (
 	google.golang.org/grpc v1.64.1

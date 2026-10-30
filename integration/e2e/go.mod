@@ -1,15 +1,6 @@
 module github.com/OraCache/oracache/integration/e2e
 
-go 1.22
-
-require (
-	github.com/docker/docker v27.1.1+incompatible
-	github.com/google/uuid v1.6.0
-	github.com/testcontainers/testcontainers-go v0.33.0
-	github.com/testcontainers/testcontainers-go/modules/compose v0.33.0
-	google.golang.org/grpc v1.64.1
-	google.golang.org/protobuf v1.34.2
-)
+go 1.27.3
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
@@ -198,6 +189,14 @@ require (
 	tags.cncf.io/container-device-interface v0.7.2 // indirect
 )
 
-require github.com/OraCache/oracache/gen v0.0.0
+require (
+	github.com/OraCache/oracache/gen v0.0.0
+	github.com/docker/docker v27.1.1+incompatible
+	github.com/google/uuid v1.6.0
+	github.com/testcontainers/testcontainers-go v0.33.0
+	github.com/testcontainers/testcontainers-go/modules/compose v0.33.0
+	google.golang.org/grpc v1.64.1
+	google.golang.org/protobuf v1.34.2
+)
 
 replace github.com/OraCache/oracache/gen => ../../gen

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.27-alpine AS build
+FROM golang:1.27.3-alpine AS build
 ARG TARGETPLATFORM
 WORKDIR /src
 ENV GOWORK=off
@@ -10,7 +10,7 @@ RUN go mod download
 COPY cmd/gateway ./cmd/gateway
 COPY internal/cache ./internal/cache
 COPY gen ./gen
-RUN --mount=type=cache,id=oracache-go1.22.2-${TARGETPLATFORM},target=/root/.cache/go-build,sharing=locked \
+RUN --mount=type=cache,id=oracache-go1.27.3-${TARGETPLATFORM},target=/root/.cache/go-build,sharing=locked \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /gateway ./cmd/gateway
 
 FROM scratch
