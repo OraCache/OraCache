@@ -1,0 +1,7 @@
+services:
+  gateway:
+    image: ${ORACACHE_GATEWAY_IMAGE:-oracache-gateway:local}
+    pull_policy: never
+    build: .
+    ports:
+      - "127.0.0.1:${ORACACHE_PORT:-50051}:50051"

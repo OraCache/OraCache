@@ -1,0 +1,2 @@
+# Hide generated protobuf/gRPC code in GitHub diffs by default.
+gen/** linguist-generated=true

@@ -1,0 +1,94 @@
+name: Go
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            gen/go.sum
+            cmd/oracache/go.sum
+            integration/e2e/go.sum
+            Makefile
+      - name: Check generated protobuf and gRPC code
+        run: |
+          make generate
+          git diff --exit-code -- gen
+          test -z "$(git ls-files --others --exclude-standard gen)"
+      - name: Race tests with per-module JUnit
+        id: tests
+        run: make test
+      - name: Vet modules
+        run: make vet
+      - name: Upload JUnit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-unit
+          path: .reports/*.xml
+          include-hidden-files: true
+          if-no-files-found: warn
+      - name: Summarize all test results
+        if: always()
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2
+        with:
+          paths: .reports/*.xml
+          show: 'all'
+          folded: true
+  e2e:
+    runs-on: ubuntu-latest
+    env:
+      ORACACHE_GATEWAY_IMAGE: oracache-gateway:ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            gen/go.sum
+            cmd/oracache/go.sum
+            integration/e2e/go.sum
+            Makefile
+      - uses: docker/setup-buildx-action@v3
+      - name: Build current gateway with persistent layer cache
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.ORACACHE_GATEWAY_IMAGE }}
+          cache-from: type=gha,scope=oracache-gateway
+          cache-to: type=gha,scope=oracache-gateway,mode=max
+      - name: Protobuf client against Compose gateway
+        id: tests
+        run: make test-e2e
+      - name: Upload JUnit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-e2e
+          path: .reports/*.xml
+          include-hidden-files: true
+          if-no-files-found: warn
+      - name: Summarize all test results
+        if: always()
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2
+        with:
+          paths: .reports/*.xml
+          show: 'all'
+          folded: true
