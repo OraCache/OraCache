@@ -17,6 +17,7 @@ jobs:
         with:
           go-version: '1.22.2'
           cache: true
+          cache-dependency-path: go.sum
       - name: Check generated protobuf and gRPC code
         run: |
           make generate
@@ -25,11 +26,24 @@ jobs:
       - run: make test vet
   e2e:
     runs-on: ubuntu-latest
+    env:
+      ORACACHE_GATEWAY_IMAGE: oracache-gateway:ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22.2'
           cache: true
+          cache-dependency-path: go.sum
+      - uses: docker/setup-buildx-action@v3
+      - name: Build current gateway with persistent layer cache
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.ORACACHE_GATEWAY_IMAGE }}
+          cache-from: type=gha,scope=oracache-gateway
+          cache-to: type=gha,scope=oracache-gateway,mode=max
       - name: Protobuf client against Compose gateway
         run: make test-e2e

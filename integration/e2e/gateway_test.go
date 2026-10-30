@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,9 +37,24 @@ func TestGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	project := "oracache-e2e-" + uuid.NewString()
+	image := os.Getenv("ORACACHE_GATEWAY_IMAGE")
+	removeImages := compose.RemoveImagesLocal
+	if image == "" {
+		// A unique tag forces a build of this checkout, not a stale local image.
+		image = project + ":local"
+		removeImages = compose.RemoveImagesAll
+	} else {
+		// CI loads this exact image before e2e; never silently rebuild a missing one.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, _, err := docker.ImageInspectWithRaw(ctx, image); err != nil {
+			t.Fatalf("prebuilt ORACACHE_GATEWAY_IMAGE %q required: %v", image, err)
+		}
+	}
 	stack, err := compose.NewDockerComposeWith(
 		compose.WithStackFiles(manifest),
-		compose.StackIdentifier("oracache-e2e-"+uuid.NewString()),
+		compose.StackIdentifier(project),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -47,14 +63,14 @@ func TestGateway(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		if err := stack.Down(ctx, compose.RemoveOrphans(true), compose.RemoveVolumes(true), compose.RemoveImagesLocal); err != nil {
+		if err := stack.Down(ctx, compose.RemoveOrphans(true), compose.RemoveVolumes(true), removeImages); err != nil {
 			t.Errorf("compose down: %v", err)
 		}
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	// Unique project, no image override: Up builds this manifest's Dockerfile.
-	if err := stack.WithEnv(map[string]string{"ORACACHE_PORT": "0"}).
+	// Compose reuses an existing explicit image; otherwise it builds the unique tag.
+	if err := stack.WithEnv(map[string]string{"ORACACHE_PORT": "0", "ORACACHE_GATEWAY_IMAGE": image}).
 		WaitForService("gateway", wait.ForLog("listening ").WithStartupTimeout(30*time.Second)).
 		Up(ctx, compose.Wait(true)); err != nil {
 		t.Fatalf("compose up (Docker required): %v", err)

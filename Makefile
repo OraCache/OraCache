@@ -1,4 +1,4 @@
-.PHONY: build test vet gen generate test-e2e up down
+.PHONY: build docker-build test vet gen generate test-e2e up down
 
 build:
 	go build -o bin/oracache ./cmd/oracache
@@ -33,6 +33,9 @@ generate: $(PROTOC_ARCHIVE)
 
 test-e2e:
 	go test -tags=e2e -count=1 -timeout=10m -v ./integration/e2e
+
+docker-build:
+	docker compose build gateway
 
 up:
 	docker compose up -d --build
