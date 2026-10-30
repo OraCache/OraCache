@@ -1,13 +1,40 @@
-.PHONY: build docker-build test vet gen generate test-e2e up down
+.PHONY: build docker-build test test-gateway test-protobuf test-cli vet gen generate test-e2e up down
+
+.DEFAULT_GOAL := build
+
+GOTESTSUM_VERSION := v1.12.0
+GOTESTSUM := $(CURDIR)/.tools/bin/gotestsum-$(GOTESTSUM_VERSION)
+REPORTS := $(CURDIR)/.reports
+
+$(GOTESTSUM):
+	mkdir -p .tools/bin
+	GOBIN="$(CURDIR)/.tools/bin" GOWORK=off go install gotest.tools/gotestsum@$(GOTESTSUM_VERSION)
+	mv .tools/bin/gotestsum "$@"
 
 build:
 	go build -o bin/oracache ./cmd/oracache
 	go build -o bin/gateway ./cmd/gateway
 
+# Clear every expected report before even installing tools: an aborted run must
+# never publish an older module's results. Individual targets do the same.
 test:
-	@set -e; for module in . gen cmd/oracache; do \
-		(cd $$module && GOWORK=off go test -race ./...); \
-	done
+	mkdir -p $(REPORTS)
+	rm -f $(REPORTS)/gateway.xml $(REPORTS)/protobuf.xml $(REPORTS)/cli.xml
+	$(MAKE) test-gateway
+	$(MAKE) test-protobuf
+	$(MAKE) test-cli
+
+define unit-test
+test-$(1):
+	mkdir -p $(REPORTS)
+	rm -f $(REPORTS)/$(1).xml
+	$$(MAKE) $$(GOTESTSUM)
+	cd $(2) && GOWORK=off $$(GOTESTSUM) --format testname --junitfile $$(REPORTS)/$(1).xml -- -race ./...
+endef
+
+$(eval $(call unit-test,gateway,.))
+$(eval $(call unit-test,protobuf,gen))
+$(eval $(call unit-test,cli,cmd/oracache))
 
 vet:
 	@set -e; for module in . gen cmd/oracache; do \
@@ -36,7 +63,10 @@ generate: $(PROTOC_ARCHIVE)
 		--go-grpc_out=. --go-grpc_opt=module=github.com/OraCache/oracache proto/cache/gateway.proto
 
 test-e2e:
-	cd integration/e2e && GOWORK=off go test -tags=e2e -count=1 -timeout=10m -v ./...
+	mkdir -p $(REPORTS)
+	rm -f $(REPORTS)/e2e.xml
+	$(MAKE) $(GOTESTSUM)
+	cd integration/e2e && GOWORK=off $(GOTESTSUM) --format testname --junitfile $(REPORTS)/e2e.xml -- -tags=e2e -count=1 -timeout=10m ./...
 
 docker-build:
 	docker compose build gateway

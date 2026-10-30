@@ -139,21 +139,72 @@ MISS, VERSION_NOT_FOUND, CONFLICT, NOT_FOUND тоже возвращаются J
   Условные записи атомарны относительно других RPC. Нет I/O в критической секции.
 
 Go клиент и интерфейс сервера находятся в `gen/gateway/v1` (пакет `gatewayv1`),
-модуль — `github.com/OraCache/oracache`. Лимит входящего gRPC сообщения сервера —
+модуль — `github.com/OraCache/oracache/gen` (полный import path:
+`github.com/OraCache/oracache/gen/gateway/v1`). Лимит входящего gRPC сообщения сервера —
 16 МиБ: обычная пачка из 1000 payload по 10 КиБ помещается целиком. Для больших
 `BatchGet` Go клиент должен увеличить стандартный receive limit (4 МиБ), например
 через `grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16 << 20))`. Этот
 транспортный лимит независим от доменных лимитов payload и размера batch.
 
+## Go workspace и модули
+
+В корне закоммичен `go.work` (Go 1.22), объединяющий четыре модуля:
+
+| Каталог | Module path | Назначение |
+| --- | --- | --- |
+| `.` | `github.com/OraCache/oracache` | gateway и in-memory кеш |
+| `gen` | `github.com/OraCache/oracache/gen` | сгенерированные protobuf/gRPC API |
+| `cmd/oracache` | `github.com/OraCache/oracache/cmd/oracache` | CLI и Kong |
+| `integration/e2e` | `github.com/OraCache/oracache/integration/e2e` | Docker/Compose и testcontainers |
+
+У каждого модуля свои `go.mod`/`go.sum`. Testcontainers не входит в граф
+зависимостей gateway, CLI или protobuf; Kong нужен только CLI. Локальные
+`replace` связывают модули и без workspace. Из корня можно запускать
+`go run ./cmd/oracache --help` и `go run ./cmd/gateway`.
+`go test ./...` из корня **не обходит вложенные модули**: используйте `make test`.
+Make запускает тесты и vet каждого модуля с `GOWORK=off`, проверяя также его
+самостоятельную разрешимость. `make build` использует workspace.
+Для обновления зависимостей запускайте `GOWORK=off go mod tidy` отдельно
+из каждого из четырёх каталогов. `go.work.sum` — локальный, игнорируемый файл;
+не используйте `go work sync` вместо независимого tidy.
+
 ## Проверки и генерация
 
 ```sh
-make test                 # go test -race ./..., без Docker
-make vet
-make test-e2e             # нужен Docker daemon
-make generate             # или make gen
+make build                # bin/gateway и bin/oracache
+make test                 # gateway + protobuf + CLI, -race, без Docker
+make test-gateway         # только корневой модуль
+make test-protobuf        # компиляция API; сейчас нет test cases
+make test-cli             # CLI, включая настоящий localhost gRPC
+make vet                  # три обычных модуля, без Docker
+make test-e2e             # отдельный модуль, нужен Docker daemon
+make generate             # или make gen; генерация в gen/gateway/v1
+make docker-build         # только сборка Docker образа
+make up                   # пересобрать и запустить Compose
+make down                 # остановить Compose
 git diff --exit-code -- gen
 ```
+
+`make test` и `make test-e2e` автоматически устанавливают закреплённый
+`gotestsum v1.12.0` (совместим с Go 1.22) через `go install ...@v1.12.0`
+в `.tools/bin/`, без sudo и без зависимости в production `go.mod`.
+Первый запуск требует доступа к Go modules; последующие используют локальный
+бинарник и Go-кеши. В консоли видны имена тестов, PASS/FAIL и итог.
+Ненулевой код `go test` сохраняется через gotestsum и Make.
+JUnit-файлы: `.reports/gateway.xml`, `.reports/protobuf.xml`,
+`.reports/cli.xml`, `.reports/e2e.xml`; каталог игнорируется git.
+Перед запуском target удаляет свой старый отчёт, а `make test` — все три
+обычных отчёта ещё до установки инструмента. Если запуск оборвался до
+создания XML, отчёта нет: это не означает «0 тестов успешно».
+Не запускайте пересекающиеся test targets одновременно в одном checkout.
+
+GitHub Actions всегда пытается загрузить доступные XML как артефакты
+`junit-unit` и `junit-e2e` и вывести job summary: статус job/test step,
+числа test cases, passed/failures/errors/skipped и детали падений.
+Отсутствующий или повреждённый XML отмечается `NO RESULTS`, а protobuf без
+тестов — `NO TEST CASES`. Подтесты считаются отдельными cases, как в JUnit.
+Summary не заменяет exit status, логи сборки, vet или генерации;
+доступ `checks:write` и сторонний publisher не требуются.
 
 Unit/integration тесты проверяют версии, условные записи, удаление, лимиты,
 порядок batch, отсутствие retention/expiry, копирование байтов, конкурентную
@@ -182,12 +233,14 @@ Docker — ошибка явного e2e запуска, не skip. Обычны
 - `make build`, `make test` и генерация используют стандартные Go-кеши:
   зависимости в `go env GOMODCACHE`, результаты компиляции в `go env GOCACHE`.
   Они сохраняются между локальными запусками; отдельная установка не нужна.
-  В обоих CI jobs `actions/setup-go` уже сохраняет эти два кеша по `go.sum`;
+  В обоих CI jobs `actions/setup-go` сохраняет эти два кеша по всем четырём
+  `go.sum` и `Makefile` (включая pin gotestsum);
   дублирующего `actions/cache` нет.
 - `make docker-build` прогревает Docker-сборку без запуска сервера; `make up`
   собирает и запускает его. Нужны Docker с BuildKit и Compose v2+.
-  `go mod download` идёт отдельным слоем после копирования только `go.mod` и
-  `go.sum`: изменение исходников не скачивает зависимости заново. Результаты
+  `go mod download` идёт отдельным слоем после копирования `go.mod`/`go.sum`
+  gateway и protobuf модуля (`gen`), от которого зависит gateway. Изменения
+  исходников или зависимостей CLI/e2e не скачивают зависимости образа заново. Результаты
   компиляции сохраняются в BuildKit cache mount, отдельном для Go 1.22.2 и
   целевой платформы; локальные пересборки используют его даже при изменении кода.
   Docker-кеши независимы от Go-кешей хоста и живут до очистки/удаления builder.

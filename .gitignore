@@ -1,3 +1,4 @@
 /.tools/
 /bin/
 /go.work.sum
+/.reports/
