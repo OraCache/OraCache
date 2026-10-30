@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.22.2-alpine AS build
+FROM golang:1.27-alpine AS build
 ARG TARGETPLATFORM
 WORKDIR /src
 ENV GOWORK=off
