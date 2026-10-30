@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/OraCache/oracache/internal/cli"
+	"github.com/OraCache/oracache/cmd/oracache/cli"
 	"os"
 )
 

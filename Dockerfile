@@ -2,7 +2,9 @@
 FROM golang:1.22.2-alpine AS build
 ARG TARGETPLATFORM
 WORKDIR /src
+ENV GOWORK=off
 COPY go.mod go.sum ./
+COPY gen/go.mod gen/go.sum ./gen/
 # Keep modules in a layer: CI exports layers, not mutable cache mounts.
 RUN go mod download
 COPY cmd/gateway ./cmd/gateway

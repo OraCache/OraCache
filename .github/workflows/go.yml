@@ -17,7 +17,11 @@ jobs:
         with:
           go-version: '1.22.2'
           cache: true
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            gen/go.sum
+            cmd/oracache/go.sum
+            integration/e2e/go.sum
       - name: Check generated protobuf and gRPC code
         run: |
           make generate
@@ -34,7 +38,11 @@ jobs:
         with:
           go-version: '1.22.2'
           cache: true
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            gen/go.sum
+            cmd/oracache/go.sum
+            integration/e2e/go.sum
       - uses: docker/setup-buildx-action@v3
       - name: Build current gateway with persistent layer cache
         uses: docker/build-push-action@v6

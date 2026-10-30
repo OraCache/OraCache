@@ -5,10 +5,14 @@ build:
 	go build -o bin/gateway ./cmd/gateway
 
 test:
-	go test -race ./...
+	@set -e; for module in . gen cmd/oracache; do \
+		(cd $$module && GOWORK=off go test -race ./...); \
+	done
 
 vet:
-	go vet ./...
+	@set -e; for module in . gen cmd/oracache; do \
+		(cd $$module && GOWORK=off go vet ./...); \
+	done
 
 # Reproducible Linux x86_64 generators, installed only under .tools/.
 PROTOC_VERSION := 27.2
@@ -32,7 +36,7 @@ generate: $(PROTOC_ARCHIVE)
 		--go-grpc_out=. --go-grpc_opt=module=github.com/OraCache/oracache proto/cache/gateway.proto
 
 test-e2e:
-	go test -tags=e2e -count=1 -timeout=10m -v ./integration/e2e
+	cd integration/e2e && GOWORK=off go test -tags=e2e -count=1 -timeout=10m -v ./...
 
 docker-build:
 	docker compose build gateway
