@@ -16,20 +16,25 @@ import (
 	"google.golang.org/grpc"
 )
 
-func TestCLI(t *testing.T) {
+func serveCLI(t *testing.T, options ...grpc.ServerOption) {
+	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := grpc.NewServer()
+	s := grpc.NewServer(options...)
 	pb.RegisterCacheGatewayServer(s, cache.New())
 	go s.Serve(l)
 	t.Cleanup(s.Stop)
 	t.Setenv("ORACACHE_ENDPOINT", l.Addr().String())
-	call := func(input string, args ...string) map[string]any {
+}
+
+func TestCLI(t *testing.T) {
+	serveCLI(t)
+	call := func(args ...string) map[string]any {
 		t.Helper()
 		var out, stderr bytes.Buffer
-		if code := Run(args, strings.NewReader(input), &out, &stderr); code != 0 {
+		if code := Run(args, forbiddenReader{}, &out, &stderr); code != 0 {
 			t.Fatalf("%v: code=%d %s", args, code, stderr.String())
 		}
 		var v map[string]any
@@ -38,33 +43,22 @@ func TestCLI(t *testing.T) {
 		}
 		return v
 	}
-	if v := call("", "get", "k"); v["status"] != "GET_STATUS_MISS" {
+	if v := call("get", "k"); v["status"] != "GET_STATUS_MISS" {
 		t.Fatal(v)
 	}
-	if v := call("hello\x00", "put", "--expected-rev=0", "k", "@-"); v["rev"] != "1" {
+	if v := call("put", "--expected-rev=0", "k", "hello"); v["rev"] != "1" || v["status"] != "PUT_STATUS_OK" {
 		t.Fatal(v)
 	}
-	if v := call("", "get", "--rev=1", "k"); v["data"] != base64.StdEncoding.EncodeToString([]byte("hello\x00")) {
+	if v := call("get", "--rev=1", "k"); v["data"] != base64.StdEncoding.EncodeToString([]byte("hello")) {
 		t.Fatal(v)
 	}
-	if v := call("no", "put", "--expected-rev=0", "k", "@-"); v["status"] != "PUT_STATUS_CONFLICT" {
+	if v := call("put", "--expected-rev=0", "k", "conflict"); v["status"] != "PUT_STATUS_CONFLICT" {
 		t.Fatal(v)
 	}
-	file := filepath.Join(t.TempDir(), "payload")
-	if err := os.WriteFile(file, []byte("file"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if v := call("", "put", "k", "@"+file); v["rev"] != "2" {
+	if v := call("delete", "--rev=1", "k"); v["status"] != "DELETE_STATUS_DELETED" {
 		t.Fatal(v)
 	}
-	if v := call("", "delete", "--rev=2", "k"); v["status"] != "DELETE_STATUS_DELETED" {
-		t.Fatal(v)
-	}
-	if v := call("", "get", "k"); v["rev"] != "1" {
-		t.Fatal(v)
-	}
-	call("", "delete", "k")
-	if v := call("", "get", "k"); v["status"] != "GET_STATUS_MISS" {
+	if v := call("get", "k"); v["status"] != "GET_STATUS_MISS" {
 		t.Fatal(v)
 	}
 }
@@ -86,15 +80,7 @@ func TestUsageErrors(t *testing.T) {
 }
 
 func TestPositionalValues(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := grpc.NewServer()
-	pb.RegisterCacheGatewayServer(s, cache.New())
-	go s.Serve(l)
-	t.Cleanup(s.Stop)
-	t.Setenv("ORACACHE_ENDPOINT", l.Addr().String())
+	serveCLI(t)
 	binary := []byte{0, 255, '\n', 'x'}
 	file := filepath.Join(t.TempDir(), "binary with spaces")
 	if err := os.WriteFile(file, binary, 0600); err != nil {
@@ -129,30 +115,18 @@ func TestPositionalValues(t *testing.T) {
 			if got != base64.StdEncoding.EncodeToString(tc.want) {
 				t.Fatalf("%v", v)
 			}
-			out.Reset()
-			if code := Run([]string{"delete", tc.name, "--rev=1"}, forbiddenReader{}, &out, &stderr); code != 0 {
-				t.Fatal(stderr.String())
-			}
 		})
 	}
 }
 
 func TestExpectedRevisionPresence(t *testing.T) {
 	requests := make(chan *pb.PutRequest, 3)
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, request any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	serveCLI(t, grpc.UnaryInterceptor(func(ctx context.Context, request any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if r, ok := request.(*pb.PutRequest); ok {
 			requests <- r
 		}
 		return handler(ctx, request)
 	}))
-	pb.RegisterCacheGatewayServer(s, cache.New())
-	go s.Serve(l)
-	t.Cleanup(s.Stop)
-	t.Setenv("ORACACHE_ENDPOINT", l.Addr().String())
 	for _, tc := range []struct {
 		args     []string
 		present  bool

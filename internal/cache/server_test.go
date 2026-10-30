@@ -105,16 +105,23 @@ func TestBoundariesAndCopies(t *testing.T) {
 }
 func TestValidationAndBatches(t *testing.T) {
 	s := New()
+	// Valid keys isolate the batch-size guard from independent key validation.
+	gets := make([]*pb.GetRequest, 1001)
+	puts := make([]*pb.PutRequest, 1001)
+	for i := range gets {
+		gets[i] = &pb.GetRequest{Key: "k"}
+		puts[i] = &pb.PutRequest{Key: "k"}
+	}
 	for _, call := range []func() error{
 		func() error { _, e := s.Get(ctx, &pb.GetRequest{}); return e },
 		func() error { _, e := s.Put(ctx, &pb.PutRequest{}); return e },
 		func() error { _, e := s.Delete(ctx, &pb.DeleteRequest{}); return e },
 		func() error {
-			_, e := s.BatchGet(ctx, &pb.BatchGetRequest{Items: make([]*pb.GetRequest, 1001)})
+			_, e := s.BatchGet(ctx, &pb.BatchGetRequest{Items: gets})
 			return e
 		},
 		func() error {
-			_, e := s.BatchPut(ctx, &pb.BatchPutRequest{Items: make([]*pb.PutRequest, 1001)})
+			_, e := s.BatchPut(ctx, &pb.BatchPutRequest{Items: puts})
 			return e
 		},
 		func() error {

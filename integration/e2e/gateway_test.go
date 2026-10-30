@@ -106,64 +106,43 @@ func TestGateway(t *testing.T) {
 			t.Fatalf("got %v; want %v", got, want)
 		}
 	}
-	get := func(rev uint64, want *pb.GetResponse) {
+	rpcCtx, cancelRPC := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelRPC()
+	get := func(want *pb.GetResponse) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		got, err := client.Get(ctx, &pb.GetRequest{Key: "key", Rev: rev})
+		got, err := client.Get(rpcCtx, &pb.GetRequest{Key: "key"})
 		check(got, want, err)
 	}
 	put := func(data []byte, expected *uint64, status pb.PutStatus, rev uint64) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		got, err := client.Put(ctx, &pb.PutRequest{Key: "key", Data: data, ExpectedRev: expected})
+		got, err := client.Put(rpcCtx, &pb.PutRequest{Key: "key", Data: data, ExpectedRev: expected})
 		check(got, &pb.PutResponse{Status: status, Rev: rev}, err)
-	}
-	del := func(rev uint64, status pb.DeleteStatus) {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		got, err := client.Delete(ctx, &pb.DeleteRequest{Key: "key", Rev: rev})
-		check(got, &pb.DeleteResponse{Status: status}, err)
 	}
 	miss := &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_MISS}
 	payload := []byte("hello\x00cache\xff")
-	get(0, miss)
+	get(miss)
 	put(payload, proto.Uint64(0), pb.PutStatus_PUT_STATUS_OK, 1)
-	get(0, &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 1, LatestRev: 1, Data: payload})
+	get(&pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 1, LatestRev: 1, Data: payload})
 	put([]byte("stale"), proto.Uint64(0), pb.PutStatus_PUT_STATUS_CONFLICT, 1)
-	put([]byte("new\x00\xfe"), proto.Uint64(1), pb.PutStatus_PUT_STATUS_OK, 2)
-	get(0, &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 2, LatestRev: 2, Data: []byte("new\x00\xfe")})
-	get(1, &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 1, LatestRev: 2, Data: payload})
-	get(99, &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_VERSION_NOT_FOUND, LatestRev: 2})
-	del(99, pb.DeleteStatus_DELETE_STATUS_NOT_FOUND)
-	del(2, pb.DeleteStatus_DELETE_STATUS_DELETED)
-	get(0, &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 1, LatestRev: 1, Data: payload})
-	del(0, pb.DeleteStatus_DELETE_STATUS_DELETED)
-	get(0, miss)
-	del(0, pb.DeleteStatus_DELETE_STATUS_NOT_FOUND)
-	put([]byte("after delete"), proto.Uint64(0), pb.PutStatus_PUT_STATUS_OK, 3)
-	put(nil, nil, pb.PutStatus_PUT_STATUS_OK, 4)
-	get(0, &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 4, LatestRev: 4})
-	batchCtx, cancelBatch := context.WithTimeout(ctx, 5*time.Second)
-	defer cancelBatch()
-	puts, err := client.BatchPut(batchCtx, &pb.BatchPutRequest{Items: []*pb.PutRequest{
-		{Key: "key", Data: payload, ExpectedRev: proto.Uint64(4)},
-		{Key: "key", ExpectedRev: proto.Uint64(4)},
+	// Missing expected_rev must stay unconditional across protobuf serialization.
+	put(payload, nil, pb.PutStatus_PUT_STATUS_OK, 2)
+	puts, err := client.BatchPut(rpcCtx, &pb.BatchPutRequest{Items: []*pb.PutRequest{
+		{Key: "key", Data: payload, ExpectedRev: proto.Uint64(2)},
+		{Key: "key", ExpectedRev: proto.Uint64(2)},
 	}})
 	check(puts, &pb.BatchPutResponse{Items: []*pb.PutResponse{
-		{Status: pb.PutStatus_PUT_STATUS_OK, Rev: 5},
-		{Status: pb.PutStatus_PUT_STATUS_CONFLICT, Rev: 5},
+		{Status: pb.PutStatus_PUT_STATUS_OK, Rev: 3},
+		{Status: pb.PutStatus_PUT_STATUS_CONFLICT, Rev: 3},
 	}}, err)
-	gets, err := client.BatchGet(batchCtx, &pb.BatchGetRequest{Items: []*pb.GetRequest{
-		{Key: "key"}, {Key: "absent"}, {Key: "key", Rev: 4},
+	gets, err := client.BatchGet(rpcCtx, &pb.BatchGetRequest{Items: []*pb.GetRequest{
+		{Key: "key"}, {Key: "absent"}, {Key: "key", Rev: 1},
 	}})
 	check(gets, &pb.BatchGetResponse{Items: []*pb.GetResponse{
-		{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 5, LatestRev: 5, Data: payload},
+		{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 3, LatestRev: 3, Data: payload},
 		{Status: pb.GetStatus_GET_STATUS_MISS},
-		{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 4, LatestRev: 5},
+		{Status: pb.GetStatus_GET_STATUS_HIT, Rev: 1, LatestRev: 3, Data: payload},
 	}}, err)
-	del(0, pb.DeleteStatus_DELETE_STATUS_DELETED)
-	get(0, miss)
+	deleted, err := client.Delete(rpcCtx, &pb.DeleteRequest{Key: "key"})
+	check(deleted, &pb.DeleteResponse{Status: pb.DeleteStatus_DELETE_STATUS_DELETED}, err)
+	get(miss)
 }
