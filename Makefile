@@ -56,8 +56,8 @@ generate: $(PROTOC_ARCHIVE)
 	printf '%s  %s\n' '$(PROTOC_SHA256)' '$(PROTOC_ARCHIVE)' | sha256sum -c -
 	unzip -oq $(PROTOC_ARCHIVE) -d .tools/protoc
 	mkdir -p .tools/bin
-	GOBIN="$(CURDIR)/.tools/bin" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
-	GOBIN="$(CURDIR)/.tools/bin" go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.4.0
+	GOTOOLCHAIN=go1.27.3 GOBIN="$(CURDIR)/.tools/bin" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+	GOTOOLCHAIN=go1.27.3 GOBIN="$(CURDIR)/.tools/bin" go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.4.0
 	PATH="$(CURDIR)/.tools/bin:$$PATH" .tools/protoc/bin/protoc -I proto -I .tools/protoc/include \
 		--go_out=. --go_opt=module=github.com/OraCache/oracache \
 		--go-grpc_out=. --go-grpc_opt=module=github.com/OraCache/oracache proto/cache/gateway.proto
