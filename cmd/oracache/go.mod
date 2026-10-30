@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/OraCache/oracache v0.0.0
 	github.com/OraCache/oracache/gen v0.0.0
+	github.com/alecthomas/kong v1.6.1
 	google.golang.org/grpc v1.64.1
 	google.golang.org/protobuf v1.34.2
 )

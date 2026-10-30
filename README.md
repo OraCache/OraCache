@@ -61,13 +61,15 @@ export ORACACHE_ENDPOINT=127.0.0.1:50051  # обязательно, значен
 ./bin/oracache get profile:42
 # {"status":"GET_STATUS_MISS"}
 
-printf '%s' 'hello' | ./bin/oracache put --expected-rev=0 profile:42
+./bin/oracache put profile:42 'hello' --expected-rev=0
 # {"status":"PUT_STATUS_OK","rev":"1"}
 ./bin/oracache get profile:42
 # {"status":"GET_STATUS_HIT","rev":"1","data":"aGVsbG8=","latestRev":"1"}
 
 printf '%s' 'new profile bytes' > profile.bin
-./bin/oracache put --file profile.bin --expected-rev=1 profile:42
+./bin/oracache put profile:42 @profile.bin --expected-rev=1
+# stdin читается только явно:
+printf '%s' 'bytes from stdin' | ./bin/oracache put other:key @-
 ./bin/oracache get --rev=1 profile:42
 ./bin/oracache delete --rev=2 profile:42  # удалить только версию 2
 ./bin/oracache get profile:42            # снова версия 1
@@ -79,15 +81,21 @@ printf '%s' 'new profile bytes' > profile.bin
 
 ```text
 oracache get    [--rev=N] [--timeout=5s] KEY
-oracache put    [--file=PATH|-] [--expected-rev=N] [--timeout=5s] KEY
+oracache put    [--expected-rev=N] [--timeout=5s] KEY VALUE
 oracache delete [--rev=N] [--timeout=5s] KEY
 ```
 
-Флаги идут **перед KEY** (стандартный Go `flag`). `--timeout` — положительная
+CLI использует Kong v1.6.1 (Go 1.22). Флаги допустимы до и после позиционных
+аргументов. `oracache --help` и `oracache put --help` показывают справку без
+endpoint, RPC и чтения stdin. `--timeout` — положительная
 длительность одного RPC. `ORACACHE_ENDPOINT` — gRPC target, обычно `host:port`;
 соединение всегда без TLS. Нет скрытого localhost fallback.
 
-`put` читает сырые байты из файла либо stdin (`--file=-`, также по умолчанию).
+`put KEY VALUE` требует оба аргумента: обычный VALUE — буквальные байты строки
+(включая пробелы в кавычках); `''` — пустой payload. `@path` читает файл без
+преобразований, `@-` — stdin, `@@text` записывает буквальное `@text`. Для значения
+с начальным дефисом используйте `--` перед позиционными аргументами. `--file`
+удалён; пропущенный VALUE — ошибка, а не неявное ожидание stdin.
 Кеш не валидирует `Profile`: можно передать protobuf Profile, JSON или любые
 бинарные данные. CLI ограничивает чтение 10241 байтом и отклоняет payload
 больше **10 КиБ = 10240 байт**, не отправляя RPC. На сервере этот же предел
