@@ -41,12 +41,13 @@ jobs:
           path: .reports/*.xml
           include-hidden-files: true
           if-no-files-found: warn
-      - name: Summarize test results
+      - name: Summarize all test results
         if: always()
-        env:
-          JOB_STATUS: ${{ job.status }}
-          TEST_STATUS: ${{ steps.tests.outcome }}
-        run: python3 tools/testreport.py --modules gateway protobuf cli --summary "$GITHUB_STEP_SUMMARY"
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2
+        with:
+          paths: .reports/*.xml
+          show: 'all'
+          folded: true
   e2e:
     runs-on: ubuntu-latest
     env:
@@ -84,59 +85,10 @@ jobs:
           path: .reports/*.xml
           include-hidden-files: true
           if-no-files-found: warn
-      - name: Summarize test results
+      - name: Summarize all test results
         if: always()
-        env:
-          JOB_STATUS: ${{ job.status }}
-          TEST_STATUS: ${{ steps.tests.outcome }}
-        run: python3 tools/testreport.py --modules e2e --summary "$GITHUB_STEP_SUMMARY"
-  report:
-    name: Combined HTML test report
-    needs: [test, e2e]
-    if: ${{ always() && !cancelled() }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download available JUnit reports
-        uses: actions/download-artifact@v4
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2
         with:
-          pattern: junit-*
-          path: .reports
-          merge-multiple: true
-      - name: Render offline HTML and summary
-        env:
-          UNIT_STATUS: ${{ needs.test.result }}
-          E2E_STATUS: ${{ needs.e2e.result }}
-        run: python3 tools/testreport.py --summary "$GITHUB_STEP_SUMMARY"
-      - name: Upload browsable report for this run
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-report
-          path: .reports/site/index.html
-          include-hidden-files: true
-          if-no-files-found: error
-      - name: Prepare optional trusted Pages artifact
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.TEST_REPORT_PAGES == 'true' }}
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: .reports/site
-  pages:
-    name: Publish main test report
-    needs: report
-    if: ${{ !cancelled() && needs.report.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.TEST_REPORT_PAGES == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    concurrency:
-      group: test-report-pages
-      cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/configure-pages@v5
-      - name: Deploy static report
-        id: deployment
-        uses: actions/deploy-pages@v4
+          paths: .reports/*.xml
+          show: 'all'
+          folded: true
