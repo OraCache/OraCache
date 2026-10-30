@@ -2,7 +2,7 @@
 
 .DEFAULT_GOAL := build
 
-GOTESTSUM_VERSION := v1.12.0
+GOTESTSUM_VERSION := v1.13.0
 GOTESTSUM := $(CURDIR)/.tools/bin/gotestsum-$(GOTESTSUM_VERSION)
 REPORTS := $(CURDIR)/.reports
 

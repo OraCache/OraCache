@@ -186,7 +186,7 @@ git diff --exit-code -- gen
 ```
 
 `make test` и `make test-e2e` автоматически устанавливают закреплённый
-`gotestsum v1.12.0` (совместим с Go 1.22) через `go install ...@v1.12.0`
+`gotestsum v1.13.0` (проверен с Go 1.27.3) через `go install ...@v1.13.0`
 в `.tools/bin/`, без sudo и без зависимости в production `go.mod`.
 Первый запуск требует доступа к Go modules; последующие используют локальный
 бинарник и Go-кеши. В консоли видны имена тестов, PASS/FAIL и итог.
