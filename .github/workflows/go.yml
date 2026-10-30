@@ -44,46 +44,9 @@ jobs:
       - name: Summarize test results
         if: always()
         env:
-          REPORT_MODULES: gateway protobuf cli
           JOB_STATUS: ${{ job.status }}
           TEST_STATUS: ${{ steps.tests.outcome }}
-        run: |
-          python3 - <<'PY'
-          import html
-          import os
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-
-          lines = ["## Test results", "",
-                   f"Job status before reporting: **{os.environ['JOB_STATUS']}**; test step: **{os.environ['TEST_STATUS']}**.", "",
-                   "| Module | Report | Tests | Passed | Failures | Errors | Skipped |",
-                   "| --- | --- | ---: | ---: | ---: | ---: | ---: |"]
-          details = []
-          for module in os.environ["REPORT_MODULES"].split():
-              path = Path(".reports") / f"{module}.xml"
-              try:
-                  tree = ET.parse(path)
-                  suites = list(tree.getroot().iter("testsuite"))
-                  if not suites:
-                      raise ValueError("no test suites")
-                  tests, failures, errors, skipped = [
-                      sum(int(s.get(key, "0")) for s in suites)
-                      for key in ("tests", "failures", "errors", "skipped")]
-                  passed = tests - failures - errors - skipped
-                  state = "FAIL" if failures or errors else "OK" if tests else "NO TEST CASES"
-                  lines.append(f"| {module} | {state} | {tests} | {passed} | {failures} | {errors} | {skipped} |")
-                  for case in tree.getroot().iter("testcase"):
-                      for problem in list(case.findall("failure")) + list(case.findall("error")):
-                          name = html.escape(f"{module}: {case.get('classname', '')}.{case.get('name', '')}")
-                          text = html.escape((problem.get("message", "") + "\n" + (problem.text or "")).strip()[:8000])
-                          details.append(f"<details><summary>{name}</summary><pre>{text}</pre></details>")
-              except (OSError, ET.ParseError, ValueError) as exc:
-                  lines.append(f"| {module} | NO RESULTS | — | — | — | — | — |")
-                  details.append(f"{module}: no usable report ({html.escape(str(exc))}); tests may not have started or completed.")
-          lines += ["", *details, "", "Counts describe reported test cases, not build/vet/generation success. See job logs for infrastructure or package build failures."]
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
-              output.write("\n".join(lines) + "\n")
-          PY
+        run: python3 tools/testreport.py --modules gateway protobuf cli --summary "$GITHUB_STEP_SUMMARY"
   e2e:
     runs-on: ubuntu-latest
     env:
@@ -124,43 +87,56 @@ jobs:
       - name: Summarize test results
         if: always()
         env:
-          REPORT_MODULES: e2e
           JOB_STATUS: ${{ job.status }}
           TEST_STATUS: ${{ steps.tests.outcome }}
-        run: |
-          python3 - <<'PY'
-          import html
-          import os
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-
-          lines = ["## Test results", "",
-                   f"Job status before reporting: **{os.environ['JOB_STATUS']}**; test step: **{os.environ['TEST_STATUS']}**.", "",
-                   "| Module | Report | Tests | Passed | Failures | Errors | Skipped |",
-                   "| --- | --- | ---: | ---: | ---: | ---: | ---: |"]
-          details = []
-          for module in os.environ["REPORT_MODULES"].split():
-              path = Path(".reports") / f"{module}.xml"
-              try:
-                  tree = ET.parse(path)
-                  suites = list(tree.getroot().iter("testsuite"))
-                  if not suites:
-                      raise ValueError("no test suites")
-                  tests, failures, errors, skipped = [
-                      sum(int(s.get(key, "0")) for s in suites)
-                      for key in ("tests", "failures", "errors", "skipped")]
-                  passed = tests - failures - errors - skipped
-                  state = "FAIL" if failures or errors else "OK" if tests else "NO TEST CASES"
-                  lines.append(f"| {module} | {state} | {tests} | {passed} | {failures} | {errors} | {skipped} |")
-                  for case in tree.getroot().iter("testcase"):
-                      for problem in list(case.findall("failure")) + list(case.findall("error")):
-                          name = html.escape(f"{module}: {case.get('classname', '')}.{case.get('name', '')}")
-                          text = html.escape((problem.get("message", "") + "\n" + (problem.text or "")).strip()[:8000])
-                          details.append(f"<details><summary>{name}</summary><pre>{text}</pre></details>")
-              except (OSError, ET.ParseError, ValueError) as exc:
-                  lines.append(f"| {module} | NO RESULTS | — | — | — | — | — |")
-                  details.append(f"{module}: no usable report ({html.escape(str(exc))}); tests may not have started or completed.")
-          lines += ["", *details, "", "Counts describe reported test cases, not build/vet/generation success. See job logs for infrastructure or package build failures."]
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:
-              output.write("\n".join(lines) + "\n")
-          PY
+        run: python3 tools/testreport.py --modules e2e --summary "$GITHUB_STEP_SUMMARY"
+  report:
+    name: Combined HTML test report
+    needs: [test, e2e]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download available JUnit reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: junit-*
+          path: .reports
+          merge-multiple: true
+      - name: Render offline HTML and summary
+        env:
+          UNIT_STATUS: ${{ needs.test.result }}
+          E2E_STATUS: ${{ needs.e2e.result }}
+        run: python3 tools/testreport.py --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload browsable report for this run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: .reports/site/index.html
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Prepare optional trusted Pages artifact
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.TEST_REPORT_PAGES == 'true' }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .reports/site
+  pages:
+    name: Publish main test report
+    needs: report
+    if: ${{ !cancelled() && needs.report.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.TEST_REPORT_PAGES == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: test-report-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Deploy static report
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -2,3 +2,4 @@
 /bin/
 /go.work.sum
 /.reports/
+/tools/__pycache__/

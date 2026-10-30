@@ -1,4 +1,4 @@
-.PHONY: build docker-build test test-gateway test-protobuf test-cli vet gen generate test-e2e up down
+.PHONY: build docker-build test test-gateway test-protobuf test-cli vet gen generate test-e2e up down test-report test-report-tools
 
 .DEFAULT_GOAL := build
 
@@ -20,6 +20,7 @@ build:
 test:
 	mkdir -p $(REPORTS)
 	rm -f $(REPORTS)/gateway.xml $(REPORTS)/protobuf.xml $(REPORTS)/cli.xml
+	$(MAKE) test-report-tools
 	$(MAKE) test-gateway
 	$(MAKE) test-protobuf
 	$(MAKE) test-cli
@@ -35,6 +36,13 @@ endef
 $(eval $(call unit-test,gateway,.))
 $(eval $(call unit-test,protobuf,gen))
 $(eval $(call unit-test,cli,cmd/oracache))
+
+test-report-tools:
+	python3 -m unittest discover -s tools -v
+
+# Reporting never substitutes for the test targets or changes their exit codes.
+test-report:
+	python3 tools/testreport.py
 
 vet:
 	@set -e; for module in . gen cmd/oracache; do \

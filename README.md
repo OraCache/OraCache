@@ -200,11 +200,57 @@ JUnit-файлы: `.reports/gateway.xml`, `.reports/protobuf.xml`,
 
 GitHub Actions всегда пытается загрузить доступные XML как артефакты
 `junit-unit` и `junit-e2e` и вывести job summary: статус job/test step,
-числа test cases, passed/failures/errors/skipped и детали падений.
-Отсутствующий или повреждённый XML отмечается `NO RESULTS`, а protobuf без
-тестов — `NO TEST CASES`. Подтесты считаются отдельными cases, как в JUnit.
-Summary не заменяет exit status, логи сборки, vet или генерации;
-доступ `checks:write` и сторонний publisher не требуются.
+числа test cases, passed/failed/errors/skipped. Отдельный job `report` после
+обоих test jobs, даже при их падении, собирает **`test-report`** с одним
+`index.html`: скачайте артефакт из Actions → нужный run → Artifacts,
+распакуйте и откройте файл в браузере. GitHub не отображает HTML прямо внутри
+артефакта. В HTML есть модули, suites, имена, длительности, поиск, фильтр
+статусов, раскрываемые failure/error/skip и stdout/stderr, если они есть в XML.
+Файл самодостаточен: без CDN, внешних шрифтов, JS-библиотек и сетевых запросов.
+
+Рендерер `tools/testreport.py` использует только **Python 3 stdlib** (для Go
+сборки Python не нужен, для `make test` и отчётов нужен `python3`). Локально:
+
+```sh
+make test
+make test-e2e              # если есть доступ к Docker daemon
+make test-report          # .reports/site/index.html из имеющихся XML
+make test-report-tools    # unittest рендерера; также входит в make test
+```
+
+`make test-report` не запускает тесты и не изменяет их exit status; выполняйте
+его отдельно и после неудачного тестового запуска. Он показывает только
+имеющиеся XML: перед полной локальной проверкой можно удалить `.reports/`,
+чтобы исключить старый e2e-отчёт. В CI каждый run использует свежий checkout.
+Отсутствующий, повреждённый или неподдерживаемый XML отмечается `NO RESULTS`,
+а protobuf без тестов — `NO TEST CASES`, не PASS. Cases считаются по самим
+`testcase`, без суммирования вложенных aggregate counters и без угадывания
+связей parent/subtest. Suite-level ошибки без failed case также не дают PASS.
+Summary и HTML не заменяют exit status, логи сборки, vet или генерации;
+в HTML сохраняются SHA/run и статусы исходных jobs. Доступ `checks:write`
+и сторонний publisher не требуются.
+
+### Необязательный хостинг отчёта в GitHub Pages
+
+По умолчанию Pages **выключен**, артефакты доступны и в PR. Чтобы публиковать
+статический отчёт без собственного сервера, администратору репозитория нужно:
+
+1. Settings → Pages → Build and deployment → Source: **GitHub Actions**.
+2. Settings → Secrets and variables → Actions → Variables: добавить repository
+   variable **`TEST_REPORT_PAGES` = `true`** (не secret).
+3. После merge/push в `main` открыть URL environment `github-pages` в job
+   `Publish main test report`. Публикуется отчёт последнего завершённого main
+   run, в том числе с неудачными тестами; SHA/run всегда указаны внутри.
+
+PR никогда не загружает Pages-артефакт и не запускает deploy. Только deploy job
+для push в `main` получает `pages:write` и `id-token:write`; тестовые jobs и
+PR остаются с `contents:read`. CI не меняет настройки репозитория и не включает
+Pages автоматически. Реальная публикация требует поддержки Pages тарифом/
+политикой организации и разрешений environment; до включения и первого
+успешного deploy живой URL не гарантирован. Логи и имена тестов могут быть
+публичными: не включайте Pages для чувствительных данных; Pages также заменит
+существующий сайт этого репозитория. Чтобы отключить следующие deploy, удалите
+переменную или задайте `false` (это не удаляет уже опубликованный сайт).
 
 Unit/integration тесты проверяют версии, условные записи, удаление, лимиты,
 порядок batch, отсутствие retention/expiry, копирование байтов, конкурентную
