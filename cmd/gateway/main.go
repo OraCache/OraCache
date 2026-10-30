@@ -1,4 +1,4 @@
-// oracache-server serves a local, plaintext, in-memory cache gateway.
+// gateway serves a local, plaintext, in-memory cache gateway.
 package main
 
 import (

@@ -18,15 +18,33 @@ RPC `CacheGateway`: `Get`, `Put`, `Delete`, `BatchGet`, `BatchPut`. CLI пред
 
 ## Быстрый запуск
 
+С Docker и Compose v2 достаточно:
+
+```sh
+docker compose up -d
+ORACACHE_ENDPOINT=localhost:50051 go run ./cmd/oracache get key
+# {"status":"GET_STATUS_MISS"}
+docker compose down
+```
+
+Compose собирает `gateway` из Dockerfile: статический бинарник в `scratch`,
+непривилегированный UID/GID 65532. Единственный опубликованный порт —
+`127.0.0.1:50051`; внутри контейнера gateway слушает `0.0.0.0:50051`.
+`ORACACHE_PORT=50052 docker compose up -d` меняет host-порт, `0` выбирает
+свободный автоматически (`docker compose port gateway 50051`). Клиенту всегда
+нужно явно передать соответствующий `ORACACHE_ENDPOINT`. После изменения кода
+используйте `make up` (`docker compose up -d --build`); остановка — `make down`.
+Данные теряются при перезапуске контейнера.
+
+Без Docker:
+
 Нужен Go 1.22+ (локально и в CI проверяется 1.22.2). Сгенерированный код уже в
 репозитории: для сборки `protoc` не нужен.
 
 ```sh
-mkdir -p bin
-go build -o bin/oracache ./cmd/oracache
-go build -o bin/oracache-server ./cmd/oracache-server
-./bin/oracache-server                 # 127.0.0.1:50051
-# или: ./bin/oracache-server --listen 127.0.0.1:50052
+make build
+./bin/gateway                 # 127.0.0.1:50051
+# или: ./bin/gateway --listen 127.0.0.1:50052
 # порт 0 выбирается ОС, фактический адрес печатается как "listening host:port"
 ```
 
@@ -120,30 +138,33 @@ Go клиент и интерфейс сервера находятся в `gen/
 ## Проверки и генерация
 
 ```sh
-go test -race ./...
-go vet ./...
-bash scripts/smoke.sh
-bash scripts/generate.sh
+make test                 # go test -race ./..., без Docker
+make vet
+make test-e2e             # нужен Docker daemon
+make generate             # или make gen
 git diff --exit-code -- gen
 ```
 
 Unit/integration тесты проверяют версии, условные записи, удаление, лимиты,
 порядок batch, отсутствие retention/expiry, копирование байтов, конкурентную
-запись и CLI с настоящим gRPC транспортом. Smoke сам собирает **оба бинарника**,
-запускает сервер на свободном порту localhost, ограниченно ждёт готовность,
-проверяет JSON MISS → PUT → HIT с бинарным payload → DELETE → MISS, старую
-версию, CONFLICT и сохранение счётчика после удаления. Trap завершает сервер и
-удаляет временный каталог. Для smoke нужны bash и Python 3.
+запись и CLI с настоящим gRPC транспортом. CLI — ручной инструмент разработчика;
+e2e не запускает CLI. Go e2e под тегом `e2e` использует сгенерированный
+protobuf/gRPC клиент и `testcontainers-go/modules/compose v0.33.0` (ComposeStack).
+Он собирает образ из того же `compose.yaml`, создаёт отдельный проект, выбирает
+свободный host-порт и ждёт listening log + реальный gRPC RPC с таймаутом.
+Проверяются полные protobuf ответы: MISS → PUT → HIT с бинарными байтами,
+CONFLICT, старые/отсутствующие версии, DELETE, повторное удаление и сохранение
+счётчика. Cleanup зарегистрирован до запуска и ограничен таймаутом. Отсутствие
+Docker — ошибка явного e2e запуска, не skip. Обычные тесты Docker не требуют.
 
 Генерация поддерживает Linux x86_64, требует `curl`, `unzip`, `sha256sum`, Go и
-доступ к GitHub/Go modules. Скрипт использует закреплённые версии:
+доступ к GitHub/Go modules. Makefile использует закреплённые версии:
 `protoc 27.2` (архив проверяется SHA-256), `protoc-gen-go v1.34.2`,
 `protoc-gen-go-grpc v1.4.0`. Инструменты ставятся только в `.tools/`, системный Go
-не изменяется. Скрипт генерирует настоящий protobuf-код и gRPC client/server
+не изменяется. `make generate` генерирует настоящий protobuf-код и gRPC client/server
 интерфейсы из исходного proto. `warmup.proto` намеренно не реализован и не включён
-в генерацию этого сервиса. `.tools/`, `bin/` и временные каталоги smoke исключены
-из git. GitHub Actions выполняет те же race/vet/smoke проверки и проверяет
-воспроизводимость генерации.
+в генерацию этого сервиса. `.tools/` и `bin/` исключены из git. GitHub Actions
+проверяет генерацию, race/vet и отдельным job запускает Go e2e с Docker.
 
 ## Исходная документация
 
