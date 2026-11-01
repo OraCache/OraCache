@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1160" viewBox="0 0 1280 1160" role="img" aria-labelledby="title desc">
+<title id="title">OraCache: пример топологии двух регионов</title>
+<desc id="desc">В каждом регионе два Gateway, два CP Service, три Metadata Store и четыре storage-машины с девятью peers трёх шардов. A — primary всех шардов. GET обслуживается локально, PUT из B пересылается Gateway A. Raft-хранилище A фиксирует cache и outbox атомарно и отправляет события в региональную копию B. CP получает peer-статусы через Agent и публикует маршруты. External Supervisor запускает процессы.</desc>
+<defs>
+<style>text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }</style>
+<marker id="blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#2563eb"/></marker>
+<marker id="gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/></marker>
+</defs>
+<rect x="0" y="0" width="1280" height="1160" rx="0" fill="#fff" stroke="#fff" stroke-width="1.5"/>
+<text x="24" y="40" font-size="28" fill="#172b4d" font-weight="700" text-anchor="start">OraCache · два региона, один регион записи</text>
+<text x="24" y="74" font-size="19" fill="#52627a" font-weight="400" text-anchor="start">GET — в своём регионе · PUT — в A · полная копия данных в B · размещение P1</text>
+<rect x="64" y="100" width="236" height="56" rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text x="182" y="134" font-size="21" fill="#172b4d" font-weight="600" text-anchor="middle">Приложения A</text>
+<rect x="24" y="180" width="580" height="744" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="48" y="211" font-size="25" fill="#172b4d" font-weight="700" text-anchor="start">Регион A · PRIMARY</text>
+<path d="M182 156 V164 H36 V232 H182 V248" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+<text x="192" y="237" font-size="15" fill="#52627a" font-weight="400" text-anchor="start">LB-A · HA</text>
+<rect x="64" y="248" width="236" height="86" rx="10" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.5"/>
+<text x="182" y="279" font-size="22" fill="#172b4d" font-weight="700" text-anchor="middle">Gateway × 2</text>
+<text x="182" y="306" font-size="17" fill="#172b4d" font-weight="400" text-anchor="middle">GW-A1 / GW-A2</text>
+<text x="182" y="326" font-size="15" fill="#52627a" font-weight="400" text-anchor="middle">Локальный кеш маршрутов</text>
+<rect x="328" y="248" width="236" height="86" rx="10" fill="#172b4d" stroke="#172b4d" stroke-width="1.5"/>
+<text x="446" y="279" font-size="22" fill="#fff" font-weight="700" text-anchor="middle">CP Service × 2</text>
+<text x="446" y="307" font-size="17" fill="#e2e8f0" font-weight="400" text-anchor="middle">CP-A1 / CP-A2</text>
+<text x="446" y="326" font-size="15" fill="#e2e8f0" font-weight="400" text-anchor="middle">API + модули управления</text>
+<path d="M328 291 H300" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#gray)" marker-start="url(#gray)"/>
+<rect x="328" y="374" width="236" height="66" rx="10" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="446" y="400" font-size="19" fill="#172b4d" font-weight="600" text-anchor="middle">Metadata Store × 3</text>
+<text x="446" y="425" font-size="16" fill="#52627a" font-weight="400" text-anchor="middle">AM1 / AM2 / AM3 · etcd</text>
+<path d="M446 334 V374" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#gray)"/>
+<text x="458" y="360" font-size="14" fill="#52627a" font-weight="400" text-anchor="start">метаданные</text>
+<rect x="44" y="490" width="540" height="414" rx="10" fill="#fff" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="64" y="518" font-size="21" fill="#172b4d" font-weight="700" text-anchor="start">Storage A1–A4 · четыре процесса</text>
+<text x="64" y="541" font-size="16" fill="#52627a" font-weight="400" text-anchor="start">CP Agent внутри каждого · отчёт по каждому peer</text>
+<path d="M130 334 V488" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+<text x="146" y="392" font-size="18" fill="#2563eb" font-weight="600" text-anchor="start">① GET / PUT</text>
+<path d="M564 291 H594 V510 H584" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#gray)" marker-start="url(#gray)"/>
+<rect x="64" y="558" width="240" height="136" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="184" y="584" font-size="19" fill="#172b4d" font-weight="700" text-anchor="middle">Машина A1</text>
+<rect x="78" y="596" width="212" height="25" rx="4" fill="#1d4ed8" stroke="none" stroke-width="1.5"/>
+<text x="184" y="615" font-size="16" fill="#fff" font-weight="600" text-anchor="middle">S1 · LEADER</text>
+<rect x="78" y="625" width="212" height="25" rx="4" fill="#dcfce7" stroke="none" stroke-width="1.5"/>
+<text x="184" y="644" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S3 · follower</text>
+<rect x="324" y="558" width="240" height="136" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="444" y="584" font-size="19" fill="#172b4d" font-weight="700" text-anchor="middle">Машина A2</text>
+<rect x="338" y="596" width="212" height="25" rx="4" fill="#dbeafe" stroke="none" stroke-width="1.5"/>
+<text x="444" y="615" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S1 · follower</text>
+<rect x="338" y="625" width="212" height="25" rx="4" fill="#c2410c" stroke="none" stroke-width="1.5"/>
+<text x="444" y="644" font-size="16" fill="#fff" font-weight="600" text-anchor="middle">S2 · LEADER</text>
+<rect x="64" y="724" width="240" height="136" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="184" y="750" font-size="19" fill="#172b4d" font-weight="700" text-anchor="middle">Машина A3</text>
+<rect x="78" y="762" width="212" height="25" rx="4" fill="#dbeafe" stroke="none" stroke-width="1.5"/>
+<text x="184" y="781" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S1 · follower</text>
+<rect x="78" y="791" width="212" height="25" rx="4" fill="#ffedd5" stroke="none" stroke-width="1.5"/>
+<text x="184" y="810" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S2 · follower</text>
+<rect x="78" y="820" width="212" height="25" rx="4" fill="#dcfce7" stroke="none" stroke-width="1.5"/>
+<text x="184" y="839" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S3 · follower</text>
+<rect x="324" y="724" width="240" height="136" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="444" y="750" font-size="19" fill="#172b4d" font-weight="700" text-anchor="middle">Машина A4</text>
+<rect x="338" y="762" width="212" height="25" rx="4" fill="#ffedd5" stroke="none" stroke-width="1.5"/>
+<text x="444" y="781" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S2 · follower</text>
+<rect x="338" y="791" width="212" height="25" rx="4" fill="#15803d" stroke="none" stroke-width="1.5"/>
+<text x="444" y="810" font-size="16" fill="#fff" font-weight="600" text-anchor="middle">S3 · LEADER</text>
+<text x="64" y="886" font-size="17" fill="#52627a" font-weight="400" text-anchor="start">9 peers · 3 группы · кворум 2/3 · outbox</text>
+<rect x="716" y="100" width="236" height="56" rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text x="834" y="134" font-size="21" fill="#172b4d" font-weight="600" text-anchor="middle">Приложения B</text>
+<rect x="676" y="180" width="580" height="744" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="700" y="211" font-size="25" fill="#172b4d" font-weight="700" text-anchor="start">Регион B · полная копия</text>
+<path d="M834 156 V164 H688 V232 H834 V248" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+<text x="844" y="237" font-size="15" fill="#52627a" font-weight="400" text-anchor="start">LB-B · HA</text>
+<rect x="716" y="248" width="236" height="86" rx="10" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.5"/>
+<text x="834" y="279" font-size="22" fill="#172b4d" font-weight="700" text-anchor="middle">Gateway × 2</text>
+<text x="834" y="306" font-size="17" fill="#172b4d" font-weight="400" text-anchor="middle">GW-B1 / GW-B2</text>
+<text x="834" y="326" font-size="15" fill="#52627a" font-weight="400" text-anchor="middle">Локальный кеш маршрутов</text>
+<rect x="980" y="248" width="236" height="86" rx="10" fill="#172b4d" stroke="#172b4d" stroke-width="1.5"/>
+<text x="1098" y="279" font-size="22" fill="#fff" font-weight="700" text-anchor="middle">CP Service × 2</text>
+<text x="1098" y="307" font-size="17" fill="#e2e8f0" font-weight="400" text-anchor="middle">CP-B1 / CP-B2</text>
+<text x="1098" y="326" font-size="15" fill="#e2e8f0" font-weight="400" text-anchor="middle">API + модули управления</text>
+<path d="M980 291 H952" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#gray)" marker-start="url(#gray)"/>
+<rect x="980" y="374" width="236" height="66" rx="10" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="1098" y="400" font-size="19" fill="#172b4d" font-weight="600" text-anchor="middle">Metadata Store × 3</text>
+<text x="1098" y="425" font-size="16" fill="#52627a" font-weight="400" text-anchor="middle">BM1 / BM2 / BM3 · etcd</text>
+<path d="M1098 334 V374" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#gray)"/>
+<text x="1110" y="360" font-size="14" fill="#52627a" font-weight="400" text-anchor="start">метаданные</text>
+<rect x="696" y="490" width="540" height="414" rx="10" fill="#fff" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="716" y="518" font-size="21" fill="#172b4d" font-weight="700" text-anchor="start">Storage B1–B4 · четыре процесса</text>
+<text x="716" y="541" font-size="16" fill="#52627a" font-weight="400" text-anchor="start">CP Agent внутри каждого · отчёт по каждому peer</text>
+<path d="M782 334 V488" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+<text x="798" y="392" font-size="18" fill="#2563eb" font-weight="600" text-anchor="start">① GET</text>
+<path d="M1216 291 H1246 V510 H1236" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#gray)" marker-start="url(#gray)"/>
+<rect x="716" y="558" width="240" height="136" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="836" y="584" font-size="19" fill="#172b4d" font-weight="700" text-anchor="middle">Машина B1</text>
+<rect x="730" y="596" width="212" height="25" rx="4" fill="#1d4ed8" stroke="none" stroke-width="1.5"/>
+<text x="836" y="615" font-size="16" fill="#fff" font-weight="600" text-anchor="middle">S1 · LEADER</text>
+<rect x="730" y="625" width="212" height="25" rx="4" fill="#dcfce7" stroke="none" stroke-width="1.5"/>
+<text x="836" y="644" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S3 · follower</text>
+<rect x="976" y="558" width="240" height="136" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="1096" y="584" font-size="19" fill="#172b4d" font-weight="700" text-anchor="middle">Машина B2</text>
+<rect x="990" y="596" width="212" height="25" rx="4" fill="#dbeafe" stroke="none" stroke-width="1.5"/>
+<text x="1096" y="615" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S1 · follower</text>
+<rect x="990" y="625" width="212" height="25" rx="4" fill="#c2410c" stroke="none" stroke-width="1.5"/>
+<text x="1096" y="644" font-size="16" fill="#fff" font-weight="600" text-anchor="middle">S2 · LEADER</text>
+<rect x="716" y="724" width="240" height="136" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="836" y="750" font-size="19" fill="#172b4d" font-weight="700" text-anchor="middle">Машина B3</text>
+<rect x="730" y="762" width="212" height="25" rx="4" fill="#dbeafe" stroke="none" stroke-width="1.5"/>
+<text x="836" y="781" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S1 · follower</text>
+<rect x="730" y="791" width="212" height="25" rx="4" fill="#ffedd5" stroke="none" stroke-width="1.5"/>
+<text x="836" y="810" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S2 · follower</text>
+<rect x="730" y="820" width="212" height="25" rx="4" fill="#dcfce7" stroke="none" stroke-width="1.5"/>
+<text x="836" y="839" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S3 · follower</text>
+<rect x="976" y="724" width="240" height="136" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="1096" y="750" font-size="19" fill="#172b4d" font-weight="700" text-anchor="middle">Машина B4</text>
+<rect x="990" y="762" width="212" height="25" rx="4" fill="#ffedd5" stroke="none" stroke-width="1.5"/>
+<text x="1096" y="781" font-size="16" fill="#172b4d" font-weight="600" text-anchor="middle">S2 · follower</text>
+<rect x="990" y="791" width="212" height="25" rx="4" fill="#15803d" stroke="none" stroke-width="1.5"/>
+<text x="1096" y="810" font-size="16" fill="#fff" font-weight="600" text-anchor="middle">S3 · LEADER</text>
+<text x="716" y="886" font-size="17" fill="#52627a" font-weight="400" text-anchor="start">9 peers · 3 группы · кворум 2/3 · import</text>
+<path d="M716 291 H640 V466 H270 V336" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+<text x="448" y="458" font-size="17" fill="#2563eb" font-weight="600" text-anchor="middle">② PUT из B → Gateway A</text>
+<path d="M586 570 H694" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+<text x="640" y="557" font-size="16" fill="#2563eb" font-weight="600" text-anchor="middle">③ Outbox</text>
+<path d="M694 604 H586" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#gray)"/>
+<text x="640" y="627" font-size="16" fill="#52627a" font-weight="600" text-anchor="middle">ACK</text>
+<rect x="24" y="948" width="1232" height="58" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="640" y="973" font-size="20" fill="#172b4d" font-weight="600" text-anchor="middle">Внешняя платформа / Supervisor A и B</text>
+<text x="640" y="996" font-size="17" fill="#52627a" font-weight="400" text-anchor="middle">CP задаёт назначения → Supervisor запускает процессы → CP Agent регистрирует узлы и peers</text>
+<text x="24" y="1038" font-size="18" fill="#172b4d" font-weight="400" text-anchor="start">① Обычный GET не обращается к CP. Gateway заранее знает шард, peers, readiness и leader hint.</text>
+<text x="24" y="1067" font-size="18" fill="#172b4d" font-weight="400" text-anchor="start">② PUT проверяет primary policy. ③ Cache + outbox фиксируются атомарно; Sender идёт прямо в Receiver.</text>
+<text x="24" y="1096" font-size="18" fill="#172b4d" font-weight="400" text-anchor="start">Пунктир: конфигурация и отчёты CP Agent. CP A ↔ CP B обмениваются каталогами регионов и endpoints.</text>
+<text x="24" y="1125" font-size="18" fill="#172b4d" font-weight="400" text-anchor="start">L/F — роли локальных групп. B-лидеры не принимают исходные PUT. На регион: 11 инстансов + внешний LB.</text>
+</svg>

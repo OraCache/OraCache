@@ -59,6 +59,6 @@
   <text x="836" y="704" class="replica">S3 · follower</text>
 
   <text x="24" y="812" class="subtitle">Другие участники этих групп размещены на других машинах; здесь показана только машина X.</text>
-  <text x="24" y="839" class="subtitle">Число реплик, кворумы и master-master одинаковы. Роль leader / follower меняется через Raft.</text>
+  <text x="24" y="839" class="subtitle">Число реплик, кворумы и протокол outbox одинаковы. Роль leader / follower меняется через Raft.</text>
   <text x="24" y="866" class="subtitle">Падение процесса затрагивает его реплики; падение машины — все её процессы в обоих вариантах.</text>
 </svg>

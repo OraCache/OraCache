@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="940" viewBox="0 0 1120 940" role="img" aria-labelledby="title desc">
-  <title id="title">OraCache master-master: один шард в двух регионах</title>
-  <desc id="desc">В каждом регионе отдельная Raft-группа S1 с лидером и двумя followers. Оба лидера принимают локальные записи и импортируют изменения друг друга. Между регионами двусторонний поток событий. Внешний control plane управляет конфигурацией и размещением и получает статусы data plane.</desc>
+  <title id="title">OraCache: один шард, primary region A и полная копия B</title>
+  <desc id="desc">В каждом регионе отдельная Raft-группа S1. A принимает исходные записи и сохраняет transactional outbox; B импортирует события и обслуживает чтения. События идут A → B, подтверждения B → A. Внешний control plane сообщает размещение и политику записи.</desc>
   <defs>
     <style>
       text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #172b4d; }
@@ -18,8 +18,8 @@
     <g id="machine-box"><rect width="236" height="120" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/></g>
   </defs>
   <rect width="1120" height="940" fill="#ffffff"/>
-  <text x="24" y="42" class="title">Master-master · один шард</text>
-  <text x="24" y="74" class="subtitle">Две независимые Raft-группы. Оба региона принимают локальные GET / PUT / Invalidate.</text>
+  <text x="24" y="42" class="title">Один шард · запись в A, копия в B</text>
+  <text x="24" y="74" class="subtitle">Две региональные Raft-группы. GET — локально; исходные PUT / Invalidate — только в A.</text>
   <rect x="208" y="96" width="704" height="80" rx="10" fill="#172b4d"/>
   <text x="560" y="128" class="heading white center">Внешний CONTROL PLANE</text>
   <text x="560" y="155" class="cp-note">Чёрный ящик · внутренняя реализация вне нашей части</text>
@@ -32,7 +32,7 @@
   <rect x="8" y="260" width="1104" height="660" rx="14" fill="#ffffff" stroke="#94a3b8" stroke-dasharray="7 5"/>
   <text x="24" y="290" class="heading">Наш DATA PLANE</text>
   <rect x="24" y="312" width="1072" height="210" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
-  <text x="48" y="344" class="heading">Регион A · группа A/S1</text>
+  <text x="48" y="344" class="heading">Регион A · primary · A/S1</text>
   <text x="720" y="344" class="subtitle">Локальный кворум: 2 из 3</text>
   <g transform="translate(48 374)">
     <use href="#machine-box"/><text x="118" y="30" class="machine">Машина A2</text>
@@ -53,13 +53,14 @@
   <text x="363" y="430" class="subtitle center">Raft</text>
   <path d="M680 448 H834" stroke="#2563eb" stroke-width="2" marker-start="url(#data-arrow)" marker-end="url(#data-arrow)"/>
   <text x="757" y="430" class="subtitle center">Raft</text>
-  <path d="M560 528 V628" stroke="#2563eb" stroke-width="3" marker-start="url(#data-arrow)" marker-end="url(#data-arrow)"/>
-  <text x="586" y="568" class="heading">События A ↔ B</text>
-  <text x="586" y="598" class="subtitle">ACK · повторная доставка</text>
-  <text x="48" y="570" class="subtitle">Export committed-событий</text>
-  <text x="48" y="600" class="subtitle">Import через локальный Raft</text>
+  <path d="M560 528 V628" stroke="#2563eb" stroke-width="3" marker-end="url(#data-arrow)"/>
+  <path d="M530 628 V528" stroke="#64748b" stroke-width="2" marker-end="url(#control-arrow)"/>
+  <text x="586" y="568" class="heading">Outbox A → B</text>
+  <text x="586" y="598" class="subtitle">ACK B → A · повторы безопасны</text>
+  <text x="48" y="570" class="subtitle">В A: cache + outbox атомарно</text>
+  <text x="48" y="600" class="subtitle">В B: Import через локальный Raft</text>
   <rect x="24" y="636" width="1072" height="210" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
-  <text x="48" y="668" class="heading">Регион B · группа B/S1</text>
+  <text x="48" y="668" class="heading">Регион B · GET / Import · B/S1</text>
   <text x="720" y="668" class="subtitle">Локальный кворум: 2 из 3</text>
   <g transform="translate(48 698)">
     <use href="#machine-box"/><text x="118" y="30" class="machine">Машина B2</text>

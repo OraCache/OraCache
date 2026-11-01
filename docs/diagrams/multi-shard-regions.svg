@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1120" viewBox="0 0 1120 1120" role="img" aria-labelledby="title desc">
-  <title id="title">OraCache master-master: несколько шардов и внешний control plane</title>
-  <desc id="desc">Оба региона принимают записи во все шарды. В каждом регионе по три реплики S1, S2 и S3 и по одному локальному лидеру на шард. Изменения передаются между регионами в обе стороны. Внешний control plane передаёт конфигурацию, размещение и команды, а data plane возвращает статусы групп, готовность и lag.</desc>
+  <title id="title">OraCache: несколько шардов, primary region A и transactional outbox</title>
+  <desc id="desc">A принимает исходные записи S1, S2 и S3. В B полная копия всех шардов для чтений. На каждый шард отдельная Raft-группа в каждом регионе; события outbox идут A → B, подтверждения обратно. Control plane публикует размещение, политику записи и состояния peers.</desc>
   <defs>
     <style>
       text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #172b4d; }
@@ -32,7 +32,7 @@
     <rect id="s3-leader" width="194" height="36" rx="5" fill="#15803d" stroke="#15803d"/>
   </defs>
   <rect width="1120" height="1120" fill="#ffffff"/>
-  <text x="24" y="42" class="title">Master-master · несколько шардов</text>
+  <text x="24" y="42" class="title">Несколько шардов · primary A и копия B</text>
   <text x="24" y="74" class="subtitle">Цвет = шард. Блок = его реплика. Тёмный блок = лидер локальной группы.</text>
   <rect x="208" y="96" width="704" height="80" rx="10" fill="#172b4d"/>
   <text x="560" y="128" class="cp-title">Внешний CONTROL PLANE</text>
@@ -44,11 +44,11 @@
   <text x="596" y="208" class="subtitle">Статусы групп, readiness,</text>
   <text x="596" y="234" class="subtitle">лидеры и replication lag</text>
   <rect x="8" y="260" width="1104" height="832" rx="14" fill="#ffffff" stroke="#94a3b8" stroke-dasharray="7 5"/>
-  <text x="24" y="290" class="region-title">Наш DATA PLANE · оба региона принимают записи</text>
+  <text x="24" y="290" class="region-title">Наш DATA PLANE · исходные записи только в A</text>
   <g transform="translate(0 208)">
   <rect x="24" y="104" width="1072" height="278" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
   <text x="48" y="136" class="region-title">Регион A</text>
-  <text x="208" y="136" class="subtitle">Полный набор S1 + S2 + S3 · локальные записи во все шарды</text>
+  <text x="208" y="136" class="subtitle">S1 + S2 + S3 · GET / PUT / Invalidate · transactional outbox</text>
   <g transform="translate(48 154)">
     <use href="#machine"/>
     <text x="113" y="25" class="machine-title">Машина A1</text>
@@ -82,17 +82,17 @@
     <use href="#s3-leader" x="16" y="152"/><text x="113" y="176" class="replica leader">S3 · LEADER</text>
   </g>
 
-  <text x="560" y="413" class="subtitle" text-anchor="middle">Двусторонняя доставка событий · подтверждения и повторная доставка</text>
+  <text x="560" y="413" class="subtitle" text-anchor="middle">События transactional outbox: A → B · подтверждения: B → A</text>
   <rect x="154" y="430" width="248" height="40" rx="6" fill="#dbeafe"/>
-  <text x="278" y="457" class="flow">S1: A ↔ B</text>
+  <text x="278" y="457" class="flow">S1: A → B</text>
   <rect x="436" y="430" width="248" height="40" rx="6" fill="#ffedd5"/>
-  <text x="560" y="457" class="flow">S2: A ↔ B</text>
+  <text x="560" y="457" class="flow">S2: A → B</text>
   <rect x="718" y="430" width="248" height="40" rx="6" fill="#dcfce7"/>
-  <text x="842" y="457" class="flow">S3: A ↔ B</text>
+  <text x="842" y="457" class="flow">S3: A → B</text>
 
   <rect x="24" y="490" width="1072" height="278" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
   <text x="48" y="522" class="region-title">Регион B</text>
-  <text x="208" y="522" class="subtitle">Полный набор S1 + S2 + S3 · локальные записи во все шарды</text>
+  <text x="208" y="522" class="subtitle">Полная копия S1 + S2 + S3 · GET и применение импорта</text>
   <g transform="translate(48 540)">
     <use href="#machine"/>
     <text x="113" y="25" class="machine-title">Машина B1</text>
@@ -127,6 +127,6 @@
   </g>
   <text x="24" y="803" class="note">Три блока одного цвета внутри региона = одна Raft-группа, кворум 2 из 3.</text>
   <text x="24" y="833" class="note">Между регионами — отдельная доставка событий. Всего 6 групп и 18 реплик.</text>
-  <text x="24" y="863" class="subtitle">Raft остаётся внутри региона. Каждый локальный лидер принимает PUT и импорт из других регионов.</text>
+  <text x="24" y="863" class="subtitle">A-лидеры принимают PUT; B-лидеры фиксируют импорт. Лидер в B не является вторым writer.</text>
   </g>
 </svg>
