@@ -1,0 +1,42 @@
+# Владельцы по умолчанию.
+# Для обязательного ревью включите в branch protection
+# "Require review from Code Owners".
+* @pluplohapy @petruekhin
+
+# Контракты и сгенерированный код.
+/proto/ @pluplohapy @petruekhin
+/gen/ @pluplohapy @petruekhin
+
+# Control Plane Phase 1.
+/proto/controlplane/ @pluplohapy @petruekhin
+/gen/controlplane/ @pluplohapy @petruekhin
+/internal/cpapi/ @pluplohapy
+/internal/cpconfig/ @pluplohapy
+/internal/statestore/ @pluplohapy
+/internal/cpagent/ @pluplohapy
+/internal/partition/ @pluplohapy
+/cmd/cp-api/ @pluplohapy
+
+# Gateway и Data Plane.
+/internal/gateway/ @pluplohapy @petruekhin
+
+# Legacy-контур.
+/internal/cache/ @petruekhin
+/cmd/gateway/ @petruekhin
+/cmd/oracache/ @petruekhin
+/proto/cache/ @petruekhin
+/gen/gateway/ @petruekhin
+/integration/ @petruekhin
+
+# CI, сборка и зависимости.
+/.github/ @petruekhin
+/.gitignore @petruekhin
+/Makefile @petruekhin
+/Dockerfile @petruekhin
+/compose.yaml @petruekhin
+/go.mod @pluplohapy @petruekhin
+/go.work @pluplohapy @petruekhin
+
+# Документация.
+/README.md @pluplohapy
+/docs/ @pluplohapy

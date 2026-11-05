@@ -1,0 +1,129 @@
+// API Control Plane: приём heartbeat и выдача конфигурации.
+//
+// Phase 1 предоставляет только ControlPlaneAPI. CommandDispatcher
+// (двунаправленный поток команд) появится в Phase 4 вместе с Controller.
+//
+// Assignments регион-скоупные: (region, partition_id) идентифицирует локальную
+// Raft-группу. У одной партиции независимые лидеры в master- и slave-регионах;
+// глобального Raft-лидера нет. Gateway фильтрует assignments своего региона,
+// а для записи использует assignment master-региона.
+
+syntax = "proto3";
+
+package controlplane.v1;
+
+option go_package = "github.com/OraCache/oracache/gen/controlplane/v1;controlplanev1";
+
+import "google/protobuf/timestamp.proto";
+
+service ControlPlaneAPI {
+  // ReportHeartbeat отправляет встроенный CP Agent ноды Storage Node.
+  // Heartbeat — soft state: liveness определяется временем получения на сервере,
+  // а не sent_at, и сам по себе не меняет revision конфигурации.
+  rpc ReportHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // GetConfig возвращает неизменяемый snapshot конфигурации. Клиент передаёт
+  // известную ему revision и сохраняет last-known-good snapshot, если ответ
+  // не содержит тела конфигурации.
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  string region = 2;
+  string instance = 3;
+  // Только для диагностики. Не использовать как часы liveness.
+  google.protobuf.Timestamp sent_at = 4;
+  uint64 config_revision = 5;
+  // Полный snapshot партиций локального региона, а не diff.
+  repeated PartitionStatus partitions = 6;
+  NodeResources resources = 7;
+}
+
+message HeartbeatResponse {
+  bool accepted = 1;
+  uint64 config_revision = 2;
+  uint32 next_heartbeat_after_ms = 3;
+  bool drain = 4;
+}
+
+message PartitionStatus {
+  uint32 partition_id = 1;
+  RaftRole role = 2;
+  uint64 term = 3;
+  uint64 commit_index = 4;
+  uint64 applied_index = 5;
+  string leader_id = 6;
+  bool ready = 7;
+  string last_error = 8;
+}
+
+enum RaftRole {
+  RAFT_ROLE_UNSPECIFIED = 0;
+  RAFT_ROLE_FOLLOWER = 1;
+  RAFT_ROLE_CANDIDATE = 2;
+  RAFT_ROLE_LEADER = 3;
+  RAFT_ROLE_LEARNER = 4;
+}
+
+message NodeResources {
+  uint64 cpu_millis = 1;
+  uint64 memory_bytes = 2;
+  uint64 disk_free_bytes = 3;
+}
+
+message GetConfigRequest {
+  string node_id = 1;
+  uint64 known_revision = 2;
+  AgentKind kind = 3;
+}
+
+enum AgentKind {
+  AGENT_KIND_UNSPECIFIED = 0;
+  AGENT_KIND_GATEWAY = 1;
+  AGENT_KIND_STORAGE_NODE = 2;
+}
+
+message GetConfigResponse {
+  uint64 revision = 1;
+  // Пусто, когда revision == known_revision. В этом случае клиент должен
+  // сохранить last-known-good snapshot.
+  ClusterConfig config = 2;
+}
+
+message ClusterConfig {
+  uint64 revision = 1;
+  uint32 partition_count = 2;
+  repeated Region regions = 3;
+  repeated Node nodes = 4;
+  // Уникальны по (region, partition_id).
+  repeated PartitionAssignment partitions = 5;
+}
+
+message Region {
+  string region_id = 1;
+  RegionRole role = 2;
+  repeated string gateway_endpoints = 3;
+}
+
+enum RegionRole {
+  REGION_ROLE_UNSPECIFIED = 0;
+  REGION_ROLE_MASTER = 1;
+  REGION_ROLE_SLAVE = 2;
+}
+
+message Node {
+  string node_id = 1;
+  string region = 2;
+  string address = 3;
+  string state = 4; // состояние: starting/ready/draining/dead
+  uint64 capacity_bytes = 5;
+  string zone = 6; // домен отказа для anti-affinity
+}
+
+message PartitionAssignment {
+  uint32 partition_id = 1;
+  string region = 2;                    // assignment привязан к региону
+  string leader_node_id = 3;            // локальный лидер в этом регионе
+  repeated string replica_node_ids = 4; // включает лидера
+}
