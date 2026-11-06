@@ -114,11 +114,17 @@ type Node struct {
 }
 
 // PartitionAssignment — локальная Raft-группа одной партиции в одном регионе.
+//
+// Ready/Readable/Writable заполняются live-view по heartbeat. В статическом
+// bootstrap snapshot они могут быть false.
 type PartitionAssignment struct {
 	PartitionID    uint32   `json:"partition_id"`
 	Region         string   `json:"region"`
 	LeaderNodeID   string   `json:"leader_node_id"`
 	ReplicaNodeIDs []string `json:"replica_node_ids"`
+	Ready          bool     `json:"ready,omitempty"`
+	Readable       bool     `json:"readable,omitempty"`
+	Writable       bool     `json:"writable,omitempty"`
 }
 
 // Validate проверяет инварианты конфигурации Control Plane. Вызывается перед
@@ -229,6 +235,15 @@ func (c *Config) Validate() error {
 		}
 		if _, ok := replicas[a.LeaderNodeID]; !ok {
 			return fmt.Errorf("%w: leader %q is not a replica in assignment (%s,%d)", ErrInvalidConfig, a.LeaderNodeID, a.Region, a.PartitionID)
+		}
+		if a.Readable && !a.Ready {
+			return fmt.Errorf("%w: assignment (%s,%d) is readable but not ready", ErrInvalidConfig, a.Region, a.PartitionID)
+		}
+		if a.Writable && (!a.Ready || !a.Readable) {
+			return fmt.Errorf("%w: assignment (%s,%d) is writable but not ready/readable", ErrInvalidConfig, a.Region, a.PartitionID)
+		}
+		if a.Writable && regions[a.Region].Role != RegionRoleMaster {
+			return fmt.Errorf("%w: assignment (%s,%d) is writable outside master region", ErrInvalidConfig, a.Region, a.PartitionID)
 		}
 		coverage[a.Region][a.PartitionID] = true
 	}

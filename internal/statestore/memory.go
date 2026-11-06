@@ -213,5 +213,38 @@ func (s *MemoryStore) LiveConfig(ctx context.Context, now time.Time, ttl time.Du
 		assignment.LeaderNodeID = candidate
 	}
 
+	// Заполняем per-partition readiness по heartbeat выбранного лидера.
+	for i := range config.Partitions {
+		assignment := &config.Partitions[i]
+		assignment.Ready = false
+		assignment.Readable = false
+		assignment.Writable = false
+
+		heartbeat, ok := s.heartbeats[assignment.LeaderNodeID]
+		if !ok || heartbeat.Region != assignment.Region {
+			continue
+		}
+		node, ok := config.NodeByID(assignment.LeaderNodeID)
+		if !ok || node.State != cpconfig.NodeStateReady {
+			continue
+		}
+		region, ok := config.RegionByID(assignment.Region)
+		if !ok {
+			continue
+		}
+		for _, partition := range heartbeat.Partitions {
+			if partition.PartitionID != assignment.PartitionID {
+				continue
+			}
+			if partition.Role != RaftRoleLeader || !partition.Ready {
+				break
+			}
+			assignment.Ready = true
+			assignment.Readable = true
+			assignment.Writable = region.Role == cpconfig.RegionRoleMaster
+			break
+		}
+	}
+
 	return Snapshot{Revision: s.snapshot.Revision, Config: config}, nil
 }

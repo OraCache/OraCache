@@ -290,6 +290,15 @@ func TestGetConfigGatewayReturnsLiveViewAtSameRevision(t *testing.T) {
 	if states["us-1"] != cpconfig.NodeStateDead {
 		t.Errorf("us-1 state = %q, want dead", states["us-1"])
 	}
+	var euPartition *controlplanev1.PartitionAssignment
+	for _, assignment := range resp.GetConfig().GetPartitions() {
+		if assignment.GetRegion() == "eu" && assignment.GetPartitionId() == 0 {
+			euPartition = assignment
+		}
+	}
+	if euPartition == nil || !euPartition.GetReady() || !euPartition.GetReadable() || !euPartition.GetWritable() {
+		t.Fatalf("eu/0 = %+v, want ready/readable/writable", euPartition)
+	}
 }
 
 func TestGetConfigGatewayExpiresStaleNode(t *testing.T) {

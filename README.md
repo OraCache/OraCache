@@ -161,7 +161,9 @@ Go клиент и интерфейс сервера находятся в `gen/
   `(region, partition_id)` — отдельная локальная Raft-группа, у master и slave
   независимые лидеры. Конфиг версионирован (`config_revision`/`known_revision`):
   Storage Node получает тело только при новой revision, Gateway — актуальный
-  live-view состава кластера на каждый poll.
+  live-view состава кластера на каждый poll. В live-view assignment содержит
+  `ready/readable/writable` по текущему лидеру: write — только master-регион
+  с готовым лидером, read — готовый лидер для strict-чтения.
 - `internal/statestore` — граница `Store`; `MemoryStore` — временная Phase 1
   реализация без etcd (TODO и ADR-001). `LiveConfig` строит live-view с TTL.
 - `internal/cpapi` — stateless gRPC API: принимает heartbeat, отдаёт snapshot
@@ -174,9 +176,10 @@ Go клиент и интерфейс сервера находятся в `gen/
   Plane продолжает работать по last-known-good.
 - `internal/gateway` — target Router/Poller: `hash(key) % P` через xxhash64,
   локальный лидер для GET и лидер master-региона для PUT, атомарная подмена
-  routing map. `ApplyView` принимает live-view при той же revision; мёртвые и
-  not-ready ноды не маршрутизируются. Legacy `cmd/gateway`/`internal/cache`
-  не затронуты.
+  routing map. `ApplyView` принимает live-view при той же revision и проверяет
+  `ready/readable/writable` конкретной партиции; мёртвые и not-ready ноды и
+  партиции не маршрутизируются. Legacy `cmd/gateway`/`internal/cache` не
+  затронуты.
 - `internal/partition` — стабильный xxhash64 и fixed partition mapping.
 - `cmd/cp-api` — plaintext gRPC сервер; `-listen`, `-node-ttl` и опциональный
   `-config` с JSON snapshot.
@@ -198,12 +201,14 @@ assignments для каждого объявленного региона и л�
 live-view тоже process-local и строится по heartbeat с TTL 15 с. После рестарта
 CP API ноды снова становятся live только после ближайших heartbeat. etcd,
 Controller, Scheduler, CommandDispatcher и персистентный last-known-good ещё
-не реализованы. Это не production-режим. Решение и миграция —
+не реализованы. Настоящие target Gateway и Storage Node тоже ещё не подняты:
+есть CP API, CP Agent и Gateway Router/Poller как библиотеки. Это не
+production-режим. Решение и миграция —
 [ADR-001](docs/architecture/ADR-001-cp-phase1-in-memory-store.md).
 
 Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
-контракт CP API, TTL/liveness, dead-node routing, циклы агента, routing map и
-e2e через настоящий loopback gRPC.
+контракт CP API, TTL/liveness, dead-node и per-partition routing, циклы агента,
+routing map и e2e через настоящий loopback gRPC.
 
 ## Go workspace и модули
 

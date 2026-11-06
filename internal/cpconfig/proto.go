@@ -55,6 +55,9 @@ func FromProto(p *controlplanev1.ClusterConfig) (*Config, error) {
 			Region:         a.GetRegion(),
 			LeaderNodeID:   a.GetLeaderNodeId(),
 			ReplicaNodeIDs: append([]string(nil), a.GetReplicaNodeIds()...),
+			Ready:          a.GetReady(),
+			Readable:       a.GetReadable(),
+			Writable:       a.GetWritable(),
 		})
 	}
 	if err := cfg.Validate(); err != nil {
@@ -102,6 +105,9 @@ func (c *Config) ToProto() *controlplanev1.ClusterConfig {
 			Region:         a.Region,
 			LeaderNodeId:   a.LeaderNodeID,
 			ReplicaNodeIds: append([]string(nil), a.ReplicaNodeIDs...),
+			Ready:          a.Ready,
+			Readable:       a.Readable,
+			Writable:       a.Writable,
 		})
 	}
 	return out

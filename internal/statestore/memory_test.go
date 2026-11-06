@@ -403,3 +403,39 @@ func TestLiveConfigRejectsZeroTTL(t *testing.T) {
 		t.Fatal("LiveConfig accepted zero TTL")
 	}
 }
+
+func TestLiveConfigProjectsPartitionReadiness(t *testing.T) {
+	t.Parallel()
+	store := statestore.NewMemory()
+	ctx := context.Background()
+	if err := store.ApplyConfig(ctx, cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	now := time.Unix(1000, 0).UTC()
+	if _, err := store.UpsertHeartbeat(ctx, statestore.Heartbeat{
+		NodeID: "eu-1", Region: "eu", ReceivedAt: now,
+		Partitions: []statestore.PartitionStatus{
+			{PartitionID: 0, Role: statestore.RaftRoleLeader, LeaderID: "eu-1", Ready: true},
+			{PartitionID: 2, Role: statestore.RaftRoleLeader, LeaderID: "eu-1", Ready: false},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertHeartbeat: %v", err)
+	}
+
+	view, err := store.LiveConfig(ctx, now, 15*time.Second)
+	if err != nil {
+		t.Fatalf("LiveConfig: %v", err)
+	}
+	ready, ok := view.Config.Assignment("eu", 0)
+	if !ok || !ready.Ready || !ready.Readable || !ready.Writable {
+		t.Fatalf("eu/0 = %+v, want ready/readable/writable", ready)
+	}
+	notReady, ok := view.Config.Assignment("eu", 2)
+	if !ok || notReady.Ready || notReady.Readable || notReady.Writable {
+		t.Fatalf("eu/2 = %+v, want not ready/readable/writable", notReady)
+	}
+	slave, ok := view.Config.Assignment("us", 0)
+	if !ok || slave.Writable {
+		t.Fatalf("us/0 = %+v, want non-writable", slave)
+	}
+}

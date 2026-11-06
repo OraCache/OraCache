@@ -126,4 +126,9 @@ message PartitionAssignment {
   string region = 2;                    // assignment привязан к региону
   string leader_node_id = 3;            // локальный лидер; в live-view — по последним heartbeat
   repeated string replica_node_ids = 4; // включает лидера
+
+  // Поля live-view. В статическом snapshot могут быть false.
+  bool ready = 5;                       // лидер партиции готов
+  bool readable = 6;                    // партицию можно читать по strict-пути
+  bool writable = 7;                    // партицию можно писать (только master-регион)
 }

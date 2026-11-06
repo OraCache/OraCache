@@ -95,6 +95,22 @@ func TestValidateRejectsInvalidConfig(t *testing.T) {
 		{name: "missing_assignment", mutate: func(c *cpconfig.Config) {
 			c.Partitions = c.Partitions[2:]
 		}},
+		{name: "writable_slave", mutate: func(c *cpconfig.Config) {
+			c.Partitions[1].Writable = true
+		}},
+		{name: "writable_not_ready", mutate: func(c *cpconfig.Config) {
+			c.Partitions[0].Ready = false
+			c.Partitions[0].Readable = true
+			c.Partitions[0].Writable = true
+		}},
+		{name: "writable_not_readable", mutate: func(c *cpconfig.Config) {
+			c.Partitions[0].Readable = false
+			c.Partitions[0].Writable = true
+		}},
+		{name: "readable_not_ready", mutate: func(c *cpconfig.Config) {
+			c.Partitions[0].Ready = false
+			c.Partitions[0].Readable = true
+		}},
 	}
 
 	for _, tt := range tests {

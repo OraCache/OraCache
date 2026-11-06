@@ -147,13 +147,17 @@ func buildSnapshotMode(localRegion string, cfg *cpconfig.Config, live bool) (*sn
 		case !ok:
 			return nil, fmt.Errorf("%w: local region %q has no assignment for partition %d", ErrNoLeader, localRegion, p)
 		default:
-			localLeader, err := resolveLeader(cfg, localAssignment)
-			if err != nil {
-				if !live {
-					return nil, err
-				}
+			if live && (!localAssignment.Ready || !localAssignment.Readable) {
+				// Партиция ещё не готова на локальном лидере.
 			} else {
-				s.local[p] = localLeader
+				localLeader, err := resolveLeader(cfg, localAssignment)
+				if err != nil {
+					if !live {
+						return nil, err
+					}
+				} else {
+					s.local[p] = localLeader
+				}
 			}
 		}
 
@@ -163,6 +167,9 @@ func buildSnapshotMode(localRegion string, cfg *cpconfig.Config, live bool) (*sn
 				continue
 			}
 			return nil, fmt.Errorf("%w: master region %q has no assignment for partition %d", ErrNoLeader, masterRegion, p)
+		}
+		if live && (!writeAssignment.Ready || !writeAssignment.Writable) {
+			continue
 		}
 		writeLeader, err := resolveLeader(cfg, writeAssignment)
 		if err != nil {

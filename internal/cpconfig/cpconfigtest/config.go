@@ -42,10 +42,12 @@ func ConfigWithCount(revision uint64, partitionCount uint32) *cpconfig.Config {
 			cpconfig.PartitionAssignment{
 				PartitionID: p, Region: "eu", LeaderNodeID: euLeader,
 				ReplicaNodeIDs: []string{euLeader, euReplica},
+				Ready:          true, Readable: true, Writable: true,
 			},
 			cpconfig.PartitionAssignment{
 				PartitionID: p, Region: "us", LeaderNodeID: usLeader,
 				ReplicaNodeIDs: []string{usLeader, usReplica},
+				Ready:          true, Readable: true,
 			},
 		)
 	}

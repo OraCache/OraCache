@@ -362,3 +362,52 @@ func TestRouterApplyViewKeepsWriteRouteWhenLocalLeaderDead(t *testing.T) {
 		t.Fatalf("WriteLeader = %+v, want eu-1", leader)
 	}
 }
+
+func TestRouterApplyViewSkipsNotReadyPartition(t *testing.T) {
+	t.Parallel()
+	router, err := gateway.NewRouter("eu")
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	view := cpconfigtest.Config(1)
+	view.Partitions[0].Ready = false
+	view.Partitions[0].Readable = false
+	view.Partitions[0].Writable = false
+	if err := router.ApplyView(view); err != nil {
+		t.Fatalf("ApplyView: %v", err)
+	}
+	if _, err := router.GetLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("GetLeader(0) error = %v, want ErrNoLeader", err)
+	}
+	if _, err := router.WriteLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("WriteLeader(0) error = %v, want ErrNoLeader", err)
+	}
+	if _, err := router.GetLeader(1); err != nil {
+		t.Fatalf("GetLeader(1): %v", err)
+	}
+}
+
+func TestRouterApplyViewSkipsNotWritableMaster(t *testing.T) {
+	t.Parallel()
+	router, err := gateway.NewRouter("eu")
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	view := cpconfigtest.Config(1)
+	view.Partitions[0].Writable = false
+	if err := router.ApplyView(view); err != nil {
+		t.Fatalf("ApplyView: %v", err)
+	}
+	if _, err := router.GetLeader(0); err != nil {
+		t.Fatalf("GetLeader(0): %v", err)
+	}
+	if _, err := router.WriteLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("WriteLeader(0) error = %v, want ErrNoLeader", err)
+	}
+}
