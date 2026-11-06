@@ -92,7 +92,41 @@ func (r *Router) Apply(cfg *cpconfig.Config) error {
 	return nil
 }
 
+// ApplyView применяет live-view с тем же revision, что и текущая конфигурация.
+// Это позволяет обновлять liveness и лидеров без изменения revision топологии.
+// Более старая revision и изменение числа партиций отклоняются.
+func (r *Router) ApplyView(cfg *cpconfig.Config) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if _, ok := cfg.RegionByID(r.region); !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownRegion, r.region)
+	}
+	next, err := buildSnapshotMode(r.region, cfg, true)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	old := r.cur.Load()
+	if old != nil {
+		if cfg.Revision < old.revision {
+			return fmt.Errorf("%w: have %d, got %d", ErrStaleRevision, old.revision, cfg.Revision)
+		}
+		if cfg.PartitionCount != old.partitionCount {
+			return fmt.Errorf("%w: have %d, got %d", ErrPartitionCountChanged, old.partitionCount, cfg.PartitionCount)
+		}
+	}
+	r.cur.Store(next)
+	return nil
+}
+
 func buildSnapshot(localRegion string, cfg *cpconfig.Config) (*snapshot, error) {
+	return buildSnapshotMode(localRegion, cfg, false)
+}
+
+func buildSnapshotMode(localRegion string, cfg *cpconfig.Config, live bool) (*snapshot, error) {
 	masterRegion := cfg.MasterRegion()
 	if masterRegion == "" {
 		return nil, fmt.Errorf("%w: config has no master region", ErrUnknownRegion)
@@ -106,24 +140,38 @@ func buildSnapshot(localRegion string, cfg *cpconfig.Config) (*snapshot, error) 
 	}
 	for p := uint32(0); p < cfg.PartitionCount; p++ {
 		localAssignment, ok := cfg.Assignment(localRegion, p)
-		if !ok {
+		switch {
+		case !ok && live:
+			// В live-view локальный маршрут может отсутствовать, но write-маршрут
+			// master-региона всё равно должен быть доступен.
+		case !ok:
 			return nil, fmt.Errorf("%w: local region %q has no assignment for partition %d", ErrNoLeader, localRegion, p)
+		default:
+			localLeader, err := resolveLeader(cfg, localAssignment)
+			if err != nil {
+				if !live {
+					return nil, err
+				}
+			} else {
+				s.local[p] = localLeader
+			}
 		}
-		localLeader, err := resolveLeader(cfg, localAssignment)
-		if err != nil {
-			return nil, err
-		}
-		s.local[p] = localLeader
 
 		writeAssignment, ok := cfg.Assignment(masterRegion, p)
 		if !ok {
+			if live {
+				continue
+			}
 			return nil, fmt.Errorf("%w: master region %q has no assignment for partition %d", ErrNoLeader, masterRegion, p)
 		}
 		writeLeader, err := resolveLeader(cfg, writeAssignment)
 		if err != nil {
-			return nil, err
+			if !live {
+				return nil, err
+			}
+		} else {
+			s.write[p] = writeLeader
 		}
-		s.write[p] = writeLeader
 	}
 	return s, nil
 }
@@ -135,6 +183,9 @@ func resolveLeader(cfg *cpconfig.Config, assignment cpconfig.PartitionAssignment
 	}
 	if node.Region != assignment.Region {
 		return Leader{}, fmt.Errorf("%w: leader %q is outside region %q", ErrNoLeader, node.ID, assignment.Region)
+	}
+	if node.State != "" && node.State != cpconfig.NodeStateReady {
+		return Leader{}, fmt.Errorf("%w: leader %q is not ready (state %q)", ErrNoLeader, node.ID, node.State)
 	}
 	return Leader{NodeID: node.ID, Address: node.Address, Region: node.Region}, nil
 }

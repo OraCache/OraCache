@@ -242,3 +242,123 @@ func TestRouterAtomicSwapUnderConcurrentReads(t *testing.T) {
 		t.Fatalf("revision = %d, want 2", router.Revision())
 	}
 }
+
+func TestRouterApplyViewAllowsSameRevisionAndSkipsDeadLeader(t *testing.T) {
+	t.Parallel()
+	router, err := gateway.NewRouter("eu")
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	view := cpconfigtest.Config(1)
+	view.Nodes[0].State = cpconfig.NodeStateDead // eu-1
+	if err := router.ApplyView(view); err != nil {
+		t.Fatalf("ApplyView: %v", err)
+	}
+	if router.Revision() != 1 {
+		t.Fatalf("revision = %d, want 1", router.Revision())
+	}
+	if _, err := router.GetLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("GetLeader(0) error = %v, want ErrNoLeader", err)
+	}
+	if _, err := router.WriteLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("WriteLeader(0) error = %v, want ErrNoLeader", err)
+	}
+	leader, err := router.GetLeader(1)
+	if err != nil {
+		t.Fatalf("GetLeader(1): %v", err)
+	}
+	if leader.NodeID != "eu-2" {
+		t.Fatalf("GetLeader(1) = %+v, want eu-2", leader)
+	}
+}
+
+func TestRouterApplyViewAcceptsLeaderChangeAtSameRevision(t *testing.T) {
+	t.Parallel()
+	router, err := gateway.NewRouter("eu")
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	view := cpconfigtest.Config(1)
+	view.Partitions[0].LeaderNodeID = "eu-2"
+	view.Partitions[0].ReplicaNodeIDs = []string{"eu-2", "eu-1"}
+	if err := router.ApplyView(view); err != nil {
+		t.Fatalf("ApplyView: %v", err)
+	}
+	leader, err := router.GetLeader(0)
+	if err != nil {
+		t.Fatalf("GetLeader: %v", err)
+	}
+	if leader.NodeID != "eu-2" {
+		t.Fatalf("leader = %+v, want eu-2", leader)
+	}
+}
+
+func TestRouterApplyViewRejectsOlderRevision(t *testing.T) {
+	t.Parallel()
+	router, _ := gateway.NewRouter("eu")
+	if err := router.Apply(cpconfigtest.Config(2)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := router.ApplyView(cpconfigtest.Config(1)); !errors.Is(err, gateway.ErrStaleRevision) {
+		t.Fatalf("ApplyView error = %v, want ErrStaleRevision", err)
+	}
+}
+
+func TestRouterApplyViewRejectsPartitionCountChange(t *testing.T) {
+	t.Parallel()
+	router, _ := gateway.NewRouter("eu")
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	view := cpconfigtest.ConfigWithCount(1, cpconfigtest.PartitionCount+1)
+	if err := router.ApplyView(view); !errors.Is(err, gateway.ErrPartitionCountChanged) {
+		t.Fatalf("ApplyView error = %v, want ErrPartitionCountChanged", err)
+	}
+}
+
+func TestRouterRejectsStaticConfigWithDeadLeader(t *testing.T) {
+	t.Parallel()
+	router, _ := gateway.NewRouter("eu")
+	view := cpconfigtest.Config(1)
+	view.Nodes[0].State = cpconfig.NodeStateDead
+	if err := router.Apply(view); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("Apply error = %v, want ErrNoLeader", err)
+	}
+}
+
+func TestRouterApplyViewKeepsWriteRouteWhenLocalLeaderDead(t *testing.T) {
+	t.Parallel()
+	router, err := gateway.NewRouter("us")
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	view := cpconfigtest.Config(1)
+	for i := range view.Nodes {
+		if view.Nodes[i].ID == "us-1" {
+			view.Nodes[i].State = cpconfig.NodeStateDead
+		}
+	}
+	if err := router.ApplyView(view); err != nil {
+		t.Fatalf("ApplyView: %v", err)
+	}
+	if _, err := router.GetLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("GetLeader error = %v, want ErrNoLeader", err)
+	}
+	leader, err := router.WriteLeader(0)
+	if err != nil {
+		t.Fatalf("WriteLeader: %v", err)
+	}
+	if leader.NodeID != "eu-1" {
+		t.Fatalf("WriteLeader = %+v, want eu-1", leader)
+	}
+}

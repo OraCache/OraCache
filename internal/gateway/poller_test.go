@@ -218,3 +218,29 @@ func TestPollerRunSurvivesRefreshErrors(t *testing.T) {
 		t.Fatal("Run did not stop after context cancellation")
 	}
 }
+
+func TestPollerAppliesSameRevisionLiveView(t *testing.T) {
+	t.Parallel()
+	router := newRouter(t)
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	view := cpconfigtest.Config(1)
+	view.Nodes[0].State = cpconfig.NodeStateDead // eu-1
+	client := configClientFunc(func(_ context.Context, req *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
+		if req.GetKnownRevision() != 1 {
+			t.Fatalf("known revision = %d, want 1", req.GetKnownRevision())
+		}
+		return &controlplanev1.GetConfigResponse{Revision: 1, Config: view.ToProto()}, nil
+	})
+	poller := gateway.NewPoller(client, router, "gw-eu-1")
+	if err := poller.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if _, err := router.GetLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("GetLeader(0) error = %v, want ErrNoLeader", err)
+	}
+	if router.Revision() != 1 {
+		t.Fatalf("revision = %d, want 1", router.Revision())
+	}
+}

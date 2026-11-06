@@ -102,6 +102,10 @@ type Store interface {
 	// независимая копия; вызывающий код не должен менять через него состояние store.
 	Config(ctx context.Context) (Snapshot, error)
 
+	// LiveConfig возвращает snapshot с актуальным live-состоянием нод и лидеров.
+	// Revision остаётся revision топологии: liveness не создаёт новую конфигурацию.
+	LiveConfig(ctx context.Context, now time.Time, ttl time.Duration) (Snapshot, error)
+
 	// ApplyConfig публикует новую revision конфигурации. Revision должна расти,
 	// а число партиций — не меняться.
 	ApplyConfig(ctx context.Context, config *cpconfig.Config) error

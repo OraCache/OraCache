@@ -266,3 +266,140 @@ func TestStoreConcurrentHeartbeatsAndSnapshots(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestLiveConfigMarksStaleNodesDead(t *testing.T) {
+	t.Parallel()
+	store := statestore.NewMemory()
+	ctx := context.Background()
+	if err := store.ApplyConfig(ctx, cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	now := time.Unix(1000, 0).UTC()
+	if _, err := store.UpsertHeartbeat(ctx, statestore.Heartbeat{
+		NodeID: "eu-1", Region: "eu", ReceivedAt: now,
+		Partitions: []statestore.PartitionStatus{
+			{PartitionID: 0, Role: statestore.RaftRoleLeader, LeaderID: "eu-1", Ready: true},
+			{PartitionID: 2, Role: statestore.RaftRoleLeader, LeaderID: "eu-1", Ready: true},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertHeartbeat(eu-1): %v", err)
+	}
+	if _, err := store.UpsertHeartbeat(ctx, statestore.Heartbeat{
+		NodeID: "eu-2", Region: "eu", ReceivedAt: now.Add(-16 * time.Second),
+		Partitions: []statestore.PartitionStatus{
+			{PartitionID: 1, Role: statestore.RaftRoleLeader, LeaderID: "eu-2", Ready: true},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertHeartbeat(eu-2): %v", err)
+	}
+
+	view, err := store.LiveConfig(ctx, now, 15*time.Second)
+	if err != nil {
+		t.Fatalf("LiveConfig: %v", err)
+	}
+	if view.Revision != 1 || view.Config == nil {
+		t.Fatalf("view = %+v", view)
+	}
+	for nodeID, want := range map[string]string{
+		"eu-1": cpconfig.NodeStateReady,
+		"eu-2": cpconfig.NodeStateDead,
+		"us-1": cpconfig.NodeStateDead,
+		"us-2": cpconfig.NodeStateDead,
+	} {
+		node, ok := view.Config.NodeByID(nodeID)
+		if !ok {
+			t.Fatalf("node %q missing", nodeID)
+		}
+		if node.State != want {
+			t.Errorf("node %q state = %q, want %q", nodeID, node.State, want)
+		}
+	}
+}
+
+func TestLiveConfigProjectsLeaderFromHeartbeat(t *testing.T) {
+	t.Parallel()
+	store := statestore.NewMemory()
+	ctx := context.Background()
+	if err := store.ApplyConfig(ctx, cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	now := time.Unix(1000, 0).UTC()
+	// По конфигурации лидер partition 0 — eu-1, но heartbeat говорит, что
+	// лидер сейчас eu-2.
+	for _, heartbeat := range []statestore.Heartbeat{
+		{
+			NodeID: "eu-1", Region: "eu", ReceivedAt: now,
+			Partitions: []statestore.PartitionStatus{
+				{PartitionID: 0, Role: statestore.RaftRoleFollower, LeaderID: "eu-2", Ready: true},
+			},
+		},
+		{
+			NodeID: "eu-2", Region: "eu", ReceivedAt: now,
+			Partitions: []statestore.PartitionStatus{
+				{PartitionID: 0, Role: statestore.RaftRoleLeader, LeaderID: "eu-2", Ready: true},
+			},
+		},
+	} {
+		if _, err := store.UpsertHeartbeat(ctx, heartbeat); err != nil {
+			t.Fatalf("UpsertHeartbeat(%s): %v", heartbeat.NodeID, err)
+		}
+	}
+
+	view, err := store.LiveConfig(ctx, now, 15*time.Second)
+	if err != nil {
+		t.Fatalf("LiveConfig: %v", err)
+	}
+	assignment, ok := view.Config.Assignment("eu", 0)
+	if !ok {
+		t.Fatal("assignment eu/0 missing")
+	}
+	if assignment.LeaderNodeID != "eu-2" {
+		t.Fatalf("live leader = %q, want eu-2", assignment.LeaderNodeID)
+	}
+}
+
+func TestLiveConfigMarksNodeStartingWithoutReadyPartitions(t *testing.T) {
+	t.Parallel()
+	store := statestore.NewMemory()
+	ctx := context.Background()
+	if err := store.ApplyConfig(ctx, cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	now := time.Unix(1000, 0).UTC()
+	if _, err := store.UpsertHeartbeat(ctx, statestore.Heartbeat{
+		NodeID: "eu-1", Region: "eu", ReceivedAt: now,
+		Partitions: []statestore.PartitionStatus{
+			{PartitionID: 0, Role: statestore.RaftRoleLeader, Ready: false},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertHeartbeat: %v", err)
+	}
+	view, err := store.LiveConfig(ctx, now, 15*time.Second)
+	if err != nil {
+		t.Fatalf("LiveConfig: %v", err)
+	}
+	node, _ := view.Config.NodeByID("eu-1")
+	if node.State != cpconfig.NodeStateStarting {
+		t.Fatalf("eu-1 state = %q, want starting", node.State)
+	}
+}
+
+func TestLiveConfigWithoutConfig(t *testing.T) {
+	t.Parallel()
+	store := statestore.NewMemory()
+	view, err := store.LiveConfig(context.Background(), time.Unix(1000, 0), 15*time.Second)
+	if err != nil {
+		t.Fatalf("LiveConfig: %v", err)
+	}
+	if view.Revision != 0 || view.Config != nil {
+		t.Fatalf("view = %+v, want empty", view)
+	}
+}
+
+func TestLiveConfigRejectsZeroTTL(t *testing.T) {
+	t.Parallel()
+	store := statestore.NewMemory()
+	if _, err := store.LiveConfig(context.Background(), time.Unix(1000, 0), 0); err == nil {
+		t.Fatal("LiveConfig accepted zero TTL")
+	}
+}

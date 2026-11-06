@@ -22,15 +22,17 @@ import (
 	"google.golang.org/grpc"
 )
 
-func newServer(store statestore.Store, logger *slog.Logger) *grpc.Server {
+func newServer(store statestore.Store, logger *slog.Logger, opts ...cpapi.Option) *grpc.Server {
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
-	controlplanev1.RegisterControlPlaneAPIServer(server, cpapi.New(store, cpapi.WithLogger(logger)))
+	options := append([]cpapi.Option{cpapi.WithLogger(logger)}, opts...)
+	controlplanev1.RegisterControlPlaneAPIServer(server, cpapi.New(store, options...))
 	return server
 }
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:50052", "plaintext gRPC listen address (use port 0 for an ephemeral port)")
 	configPath := flag.String("config", "", "optional JSON config snapshot loaded into the in-memory store")
+	nodeTTL := flag.Duration("node-ttl", cpapi.DefaultNodeTTL, "node liveness TTL without heartbeat")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
@@ -58,7 +60,7 @@ func main() {
 		logger.Error("listen", "address", *listen, "error", err)
 		os.Exit(1)
 	}
-	server := newServer(store, logger)
+	server := newServer(store, logger, cpapi.WithNodeTTL(*nodeTTL))
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)

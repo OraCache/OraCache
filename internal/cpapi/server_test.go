@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,23 @@ import (
 type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
+
+type mutableClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *mutableClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *mutableClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
 
 func testServer(t *testing.T, now time.Time) (*cpapi.Server, *statestore.MemoryStore) {
 	t.Helper()
@@ -231,6 +249,100 @@ func TestGetConfigEmptyStore(t *testing.T) {
 	}
 }
 
+func TestGetConfigGatewayReturnsLiveViewAtSameRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0).UTC()
+	srv, store := testServer(t, now)
+	if err := store.ApplyConfig(context.Background(), cpconfigtest.Config(3)); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if _, err := store.UpsertHeartbeat(context.Background(), statestore.Heartbeat{
+		NodeID: "eu-1", Region: "eu", ReceivedAt: now,
+		Partitions: []statestore.PartitionStatus{
+			{PartitionID: 0, Role: statestore.RaftRoleLeader, LeaderID: "eu-1", Ready: true},
+			{PartitionID: 2, Role: statestore.RaftRoleLeader, LeaderID: "eu-1", Ready: true},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertHeartbeat: %v", err)
+	}
+
+	resp, err := srv.GetConfig(context.Background(), &controlplanev1.GetConfigRequest{
+		NodeId:        "gw-eu-1",
+		KnownRevision: 3,
+		Kind:          controlplanev1.AgentKind_AGENT_KIND_GATEWAY,
+	})
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if resp.GetRevision() != 3 || resp.GetConfig() == nil {
+		t.Fatalf("response = %+v, want full live view", resp)
+	}
+	states := make(map[string]string)
+	for _, node := range resp.GetConfig().GetNodes() {
+		states[node.GetNodeId()] = node.GetState()
+	}
+	if states["eu-1"] != cpconfig.NodeStateReady {
+		t.Errorf("eu-1 state = %q, want ready", states["eu-1"])
+	}
+	if states["eu-2"] != cpconfig.NodeStateDead {
+		t.Errorf("eu-2 state = %q, want dead", states["eu-2"])
+	}
+	if states["us-1"] != cpconfig.NodeStateDead {
+		t.Errorf("us-1 state = %q, want dead", states["us-1"])
+	}
+}
+
+func TestGetConfigGatewayExpiresStaleNode(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0).UTC()
+	clock := &mutableClock{now: now}
+	store := statestore.NewMemory()
+	srv := cpapi.New(store, cpapi.WithClock(clock), cpapi.WithNodeTTL(10*time.Second))
+	if err := store.ApplyConfig(context.Background(), cpconfigtest.Config(3)); err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if _, err := store.UpsertHeartbeat(context.Background(), statestore.Heartbeat{
+		NodeID: "eu-1", Region: "eu", ReceivedAt: now,
+		Partitions: []statestore.PartitionStatus{
+			{PartitionID: 0, Role: statestore.RaftRoleLeader, LeaderID: "eu-1", Ready: true},
+		},
+	}); err != nil {
+		t.Fatalf("UpsertHeartbeat: %v", err)
+	}
+	req := &controlplanev1.GetConfigRequest{
+		NodeId: "gw-eu-1", KnownRevision: 3,
+		Kind: controlplanev1.AgentKind_AGENT_KIND_GATEWAY,
+	}
+	resp, err := srv.GetConfig(context.Background(), req)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	state := ""
+	for _, node := range resp.GetConfig().GetNodes() {
+		if node.GetNodeId() == "eu-1" {
+			state = node.GetState()
+		}
+	}
+	if state != cpconfig.NodeStateReady {
+		t.Fatalf("eu-1 state = %q, want ready", state)
+	}
+
+	clock.Advance(11 * time.Second)
+	resp, err = srv.GetConfig(context.Background(), req)
+	if err != nil {
+		t.Fatalf("GetConfig after TTL: %v", err)
+	}
+	state = ""
+	for _, node := range resp.GetConfig().GetNodes() {
+		if node.GetNodeId() == "eu-1" {
+			state = node.GetState()
+		}
+	}
+	if state != cpconfig.NodeStateDead {
+		t.Fatalf("eu-1 state = %q, want dead", state)
+	}
+}
+
 func TestGetConfigServesFullSnapshotAndRevisionOnly(t *testing.T) {
 	t.Parallel()
 	srv, store := testServer(t, time.Unix(1000, 0))
@@ -273,8 +385,10 @@ func TestGetConfigServesFullSnapshotAndRevisionOnly(t *testing.T) {
 		t.Fatalf("region-scoped leaders = eu %q, us %q", euLeader, usLeader)
 	}
 
-	// Revision совпадает: тело не передаётся, клиент сохраняет last-known-good.
+	// Revision совпадает у Storage Node: тело не передаётся, клиент сохраняет
+	// last-known-good. Gateway в этом случае получает live-view.
 	req.KnownRevision = 3
+	req.Kind = controlplanev1.AgentKind_AGENT_KIND_STORAGE_NODE
 	resp, err = srv.GetConfig(context.Background(), req)
 	if err != nil {
 		t.Fatalf("GetConfig(equal): %v", err)
@@ -310,6 +424,9 @@ func (s failingStore) Heartbeat(context.Context, string) (statestore.Heartbeat, 
 	return statestore.Heartbeat{}, false, s.err
 }
 func (s failingStore) Config(context.Context) (statestore.Snapshot, error) {
+	return statestore.Snapshot{}, s.err
+}
+func (s failingStore) LiveConfig(context.Context, time.Time, time.Duration) (statestore.Snapshot, error) {
 	return statestore.Snapshot{}, s.err
 }
 func (s failingStore) ApplyConfig(context.Context, *cpconfig.Config) error { return s.err }

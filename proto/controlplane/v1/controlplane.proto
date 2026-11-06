@@ -22,9 +22,9 @@ service ControlPlaneAPI {
   // а не sent_at, и сам по себе не меняет revision конфигурации.
   rpc ReportHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 
-  // GetConfig возвращает неизменяемый snapshot конфигурации. Клиент передаёт
-  // известную ему revision и сохраняет last-known-good snapshot, если ответ
-  // не содержит тела конфигурации.
+  // GetConfig возвращает snapshot конфигурации. Gateway получает live-view
+  // состава кластера даже при совпадении revision; Storage Node при совпадении
+  // revision получает только revision и сохраняет last-known-good.
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
 }
 
@@ -86,8 +86,8 @@ enum AgentKind {
 
 message GetConfigResponse {
   uint64 revision = 1;
-  // Пусто, когда revision == known_revision. В этом случае клиент должен
-  // сохранить last-known-good snapshot.
+  // Может быть пустым при совпадении revision для Storage Node. Gateway
+  // получает live-view и при совпадении revision.
   ClusterConfig config = 2;
 }
 
@@ -116,7 +116,7 @@ message Node {
   string node_id = 1;
   string region = 2;
   string address = 3;
-  string state = 4; // состояние: starting/ready/draining/dead
+  string state = 4; // состояние: starting/ready/draining/dead; в live-view отражает liveness
   uint64 capacity_bytes = 5;
   string zone = 6; // домен отказа для anti-affinity
 }
@@ -124,6 +124,6 @@ message Node {
 message PartitionAssignment {
   uint32 partition_id = 1;
   string region = 2;                    // assignment привязан к региону
-  string leader_node_id = 3;            // локальный лидер в этом регионе
+  string leader_node_id = 3;            // локальный лидер; в live-view — по последним heartbeat
   repeated string replica_node_ids = 4; // включает лидера
 }

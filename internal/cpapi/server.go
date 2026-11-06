@@ -1,9 +1,9 @@
 // Package cpapi реализует stateless gRPC API Control Plane.
 //
-// API принимает heartbeat и отдаёт неизменяемые snapshot конфигурации из
-// statestore.Store. Он не содержит логики размещения: assignments формирует
-// Scheduler/Controller и публикует через StateStore. Heartbeat — soft state
-// и сам по себе не меняет revision конфигурации.
+// API принимает heartbeat, отдаёт неизменяемый snapshot конфигурации и
+// live-view состава кластера для Gateway. Desired placement формирует
+// Scheduler/Controller и публикует через StateStore; heartbeat остаётся soft
+// state и не меняет revision конфигурации.
 package cpapi
 
 import (
@@ -27,6 +27,8 @@ const (
 	MaxLastErrorBytes = 1024
 	// DefaultHeartbeatInterval — интервал, который CP API сообщает CP Agent.
 	DefaultHeartbeatInterval = 5 * time.Second
+	// DefaultNodeTTL — сколько CP API считает ноду живой без heartbeat.
+	DefaultNodeTTL = 15 * time.Second
 )
 
 // Clock даёт время получения heartbeat на CP. Тесты используют fake clock;
@@ -70,6 +72,16 @@ func WithHeartbeatInterval(interval time.Duration) Option {
 	}
 }
 
+// WithNodeTTL переопределяет TTL liveness ноды. По умолчанию используется
+// DefaultNodeTTL.
+func WithNodeTTL(ttl time.Duration) Option {
+	return func(s *Server) {
+		if ttl > 0 {
+			s.nodeTTL = ttl
+		}
+	}
+}
+
 // Server реализует controlplanev1.ControlPlaneAPIServer.
 type Server struct {
 	controlplanev1.UnimplementedControlPlaneAPIServer
@@ -78,6 +90,7 @@ type Server struct {
 	clock             Clock
 	log               *slog.Logger
 	heartbeatInterval time.Duration
+	nodeTTL           time.Duration
 }
 
 // New создаёт сервер CP API. store не должен быть nil.
@@ -90,6 +103,7 @@ func New(store statestore.Store, opts ...Option) *Server {
 		clock:             systemClock{},
 		log:               slog.Default(),
 		heartbeatInterval: DefaultHeartbeatInterval,
+		nodeTTL:           DefaultNodeTTL,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -185,8 +199,9 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 	}, nil
 }
 
-// GetConfig реализует controlplanev1.ControlPlaneAPI. Клиент, который уже знает
-// текущую revision, получает только revision и сохраняет last-known-good.
+// GetConfig реализует controlplanev1.ControlPlaneAPI. Gateway всегда получает
+// актуальный live-view состава кластера, даже при совпадении revision; Storage
+// Node при совпадении revision получает только revision и сохраняет last-known-good.
 func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "config request is required")
@@ -200,7 +215,16 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 		return nil, status.Error(codes.InvalidArgument, "kind must be GATEWAY or STORAGE_NODE")
 	}
 
-	snapshot, err := s.store.Config(ctx)
+	gateway := req.GetKind() == controlplanev1.AgentKind_AGENT_KIND_GATEWAY
+	var (
+		snapshot statestore.Snapshot
+		err      error
+	)
+	if gateway {
+		snapshot, err = s.store.LiveConfig(ctx, s.clock.Now().UTC(), s.nodeTTL)
+	} else {
+		snapshot, err = s.store.Config(ctx)
+	}
 	if err != nil {
 		s.log.ErrorContext(ctx, "store config failed", "node_id", req.GetNodeId(), "error", err)
 		return nil, status.Error(codes.Unavailable, "config store unavailable")
@@ -208,10 +232,10 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 	if req.GetKnownRevision() > snapshot.Revision {
 		return nil, status.Errorf(codes.FailedPrecondition, "known revision %d is ahead of CP revision %d", req.GetKnownRevision(), snapshot.Revision)
 	}
-	if req.GetKnownRevision() == snapshot.Revision {
-		return &controlplanev1.GetConfigResponse{Revision: snapshot.Revision}, nil
-	}
 	if snapshot.Config == nil {
+		if req.GetKnownRevision() == snapshot.Revision {
+			return &controlplanev1.GetConfigResponse{Revision: snapshot.Revision}, nil
+		}
 		s.log.ErrorContext(ctx, "config snapshot is missing", "node_id", req.GetNodeId(), "revision", snapshot.Revision)
 		return nil, status.Error(codes.Internal, "config snapshot is inconsistent")
 	}
@@ -222,6 +246,9 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 			"config_revision", snapshot.Config.Revision,
 		)
 		return nil, status.Error(codes.Internal, "config snapshot is inconsistent")
+	}
+	if req.GetKnownRevision() == snapshot.Revision && !gateway {
+		return &controlplanev1.GetConfigResponse{Revision: snapshot.Revision}, nil
 	}
 	response := &controlplanev1.GetConfigResponse{
 		Revision: snapshot.Revision,

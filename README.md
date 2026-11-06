@@ -159,28 +159,32 @@ Go клиент и интерфейс сервера находятся в `gen/
 - `proto/controlplane/v1/controlplane.proto` — `ControlPlaneAPI`
   (`ReportHeartbeat`, `GetConfig`). Assignments регион-скоупные:
   `(region, partition_id)` — отдельная локальная Raft-группа, у master и slave
-  независимые лидеры. Конфиг версионирован (`config_revision`/`known_revision`),
-  тело передаётся только при новой revision.
+  независимые лидеры. Конфиг версионирован (`config_revision`/`known_revision`):
+  Storage Node получает тело только при новой revision, Gateway — актуальный
+  live-view состава кластера на каждый poll.
 - `internal/statestore` — граница `Store`; `MemoryStore` — временная Phase 1
-  реализация без etcd (TODO и ADR-001).
-- `internal/cpapi` — stateless gRPC API: принимает heartbeat, отдаёт snapshot.
-  Heartbeat — soft state; CP API не выводит из него лидеров и не содержит
-  placement-логики.
+  реализация без etcd (TODO и ADR-001). `LiveConfig` строит live-view с TTL.
+- `internal/cpapi` — stateless gRPC API: принимает heartbeat, отдаёт snapshot
+  и live-view. Heartbeat — soft state; liveness считается по TTL, лидеры для
+  Gateway выбираются по последним heartbeat. Placement по-прежнему не входит
+  в CP API.
 - `internal/cpagent` — встроенный модуль `oracache-node`, не сайдкар:
   heartbeat раз в 5 с, config pull раз в 10 с и немедленный pull, если
   heartbeat вернул новую revision. Ошибки CP логируются и ретраятся; Data
   Plane продолжает работать по last-known-good.
 - `internal/gateway` — target Router/Poller: `hash(key) % P` через xxhash64,
   локальный лидер для GET и лидер master-региона для PUT, атомарная подмена
-  routing map. Legacy `cmd/gateway`/`internal/cache` не затронуты.
+  routing map. `ApplyView` принимает live-view при той же revision; мёртвые и
+  not-ready ноды не маршрутизируются. Legacy `cmd/gateway`/`internal/cache`
+  не затронуты.
 - `internal/partition` — стабильный xxhash64 и fixed partition mapping.
-- `cmd/cp-api` — plaintext gRPC сервер; `-listen`, опциональный `-config`
-  с JSON snapshot.
+- `cmd/cp-api` — plaintext gRPC сервер; `-listen`, `-node-ttl` и опциональный
+  `-config` с JSON snapshot.
 
 ```sh
 make build
 ./bin/cp-api -listen 127.0.0.1:50052
-# опционально: ./bin/cp-api -listen 127.0.0.1:50052 -config /path/to/cp.json
+# опционально: ./bin/cp-api -listen 127.0.0.1:50052 -config /path/to/cp.json -node-ttl 15s
 ```
 
 Без `-config` CP API принимает heartbeat, но не отдаёт routing map: assignments
@@ -191,12 +195,15 @@ Controller/Scheduler через etcd). JSON использует поля `revis
 assignments для каждого объявленного региона и лидера внутри его реплик.
 
 **Ограничение Phase 1:** состояние in-memory и теряется при рестарте CP API;
-etcd, Controller, Scheduler, CommandDispatcher и персистентный last-known-good
-ещё не реализованы. Это не production-режим. Решение и миграция —
+live-view тоже process-local и строится по heartbeat с TTL 15 с. После рестарта
+CP API ноды снова становятся live только после ближайших heartbeat. etcd,
+Controller, Scheduler, CommandDispatcher и персистентный last-known-good ещё
+не реализованы. Это не production-режим. Решение и миграция —
 [ADR-001](docs/architecture/ADR-001-cp-phase1-in-memory-store.md).
 
 Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
-контракт CP API, циклы агента, routing map и e2e через настоящий loopback gRPC.
+контракт CP API, TTL/liveness, dead-node routing, циклы агента, routing map и
+e2e через настоящий loopback gRPC.
 
 ## Go workspace и модули
 

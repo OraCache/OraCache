@@ -2,9 +2,11 @@ package cpapi_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +33,8 @@ func TestPhase1HeartbeatAndConfigPull(t *testing.T) {
 	if err := store.ApplyConfig(ctx, cpconfigtest.Config(1)); err != nil {
 		t.Fatalf("ApplyConfig(1): %v", err)
 	}
-	srv := cpapi.New(store, cpapi.WithHeartbeatInterval(25*time.Millisecond))
+	clock := &mutableClock{now: time.Now().UTC()}
+	srv := cpapi.New(store, cpapi.WithHeartbeatInterval(25*time.Millisecond), cpapi.WithClock(clock))
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -82,14 +85,18 @@ func TestPhase1HeartbeatAndConfigPull(t *testing.T) {
 	agentCtx, stopAgent := context.WithCancel(ctx)
 	agentDone := make(chan error, 1)
 	go func() { agentDone <- agent.Run(agentCtx) }()
-	t.Cleanup(func() {
-		stopAgent()
-		select {
-		case <-agentDone:
-		case <-time.After(2 * time.Second):
-			t.Error("cp agent did not stop")
-		}
-	})
+	var stopOnce sync.Once
+	stopAgentNow := func() {
+		stopOnce.Do(func() {
+			stopAgent()
+			select {
+			case <-agentDone:
+			case <-time.After(2 * time.Second):
+				t.Error("cp agent did not stop")
+			}
+		})
+	}
+	t.Cleanup(stopAgentNow)
 
 	waitFor(t, 3*time.Second, func() bool {
 		hb, ok, err := store.Heartbeat(ctx, "eu-1")
@@ -116,10 +123,7 @@ func TestPhase1HeartbeatAndConfigPull(t *testing.T) {
 		t.Fatalf("initial leader = %+v, want eu-1", leader)
 	}
 
-	next := cpconfigtest.Config(2)
-	next.Partitions[0].LeaderNodeID = "eu-2"
-	next.Partitions[0].ReplicaNodeIDs = []string{"eu-2", "eu-1"}
-	if err := store.ApplyConfig(ctx, next); err != nil {
+	if err := store.ApplyConfig(ctx, cpconfigtest.Config(2)); err != nil {
 		t.Fatalf("ApplyConfig(2): %v", err)
 	}
 
@@ -136,8 +140,19 @@ func TestPhase1HeartbeatAndConfigPull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gateway GetLeader after update: %v", err)
 	}
-	if leader.NodeID != "eu-2" {
-		t.Fatalf("updated leader = %+v, want eu-2", leader)
+	if leader.NodeID != "eu-1" {
+		t.Fatalf("live leader = %+v, want eu-1", leader)
+	}
+
+	// Останавливаем агент и переводим часы CP за TTL: gateway должен получить
+	// live-view, в котором нода мертва, и перестать маршрутизировать.
+	stopAgentNow()
+	clock.Advance(time.Minute)
+	if err := poller.Refresh(ctx); err != nil {
+		t.Fatalf("gateway Refresh(expired): %v", err)
+	}
+	if _, err := router.GetLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("GetLeader after TTL error = %v, want ErrNoLeader", err)
 	}
 }
 

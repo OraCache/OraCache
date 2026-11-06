@@ -587,8 +587,8 @@ type GetConfigResponse struct {
 	unknownFields protoimpl.UnknownFields
 
 	Revision uint64 `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
-	// Пусто, когда revision == known_revision. В этом случае клиент должен
-	// сохранить last-known-good snapshot.
+	// Может быть пустым при совпадении revision для Storage Node. Gateway
+	// получает live-view и при совпадении revision.
 	Config *ClusterConfig `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
 }
 
@@ -789,7 +789,7 @@ type Node struct {
 	NodeId        string `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Region        string `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
 	Address       string `protobuf:"bytes,3,opt,name=address,proto3" json:"address,omitempty"`
-	State         string `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"` // состояние: starting/ready/draining/dead
+	State         string `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"` // состояние: starting/ready/draining/dead; в live-view отражает liveness
 	CapacityBytes uint64 `protobuf:"varint,5,opt,name=capacity_bytes,json=capacityBytes,proto3" json:"capacity_bytes,omitempty"`
 	Zone          string `protobuf:"bytes,6,opt,name=zone,proto3" json:"zone,omitempty"` // домен отказа для anti-affinity
 }
@@ -875,7 +875,7 @@ type PartitionAssignment struct {
 
 	PartitionId    uint32   `protobuf:"varint,1,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
 	Region         string   `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`                                         // assignment привязан к региону
-	LeaderNodeId   string   `protobuf:"bytes,3,opt,name=leader_node_id,json=leaderNodeId,proto3" json:"leader_node_id,omitempty"`       // локальный лидер в этом регионе
+	LeaderNodeId   string   `protobuf:"bytes,3,opt,name=leader_node_id,json=leaderNodeId,proto3" json:"leader_node_id,omitempty"`       // локальный лидер; в live-view — по последним heartbeat
 	ReplicaNodeIds []string `protobuf:"bytes,4,rep,name=replica_node_ids,json=replicaNodeIds,proto3" json:"replica_node_ids,omitempty"` // включает лидера
 }
 

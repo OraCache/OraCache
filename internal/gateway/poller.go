@@ -84,10 +84,10 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	if resp.GetRevision() < known {
 		return fmt.Errorf("oracache/gateway: CP revision went backwards: known %d, got %d", known, resp.GetRevision())
 	}
-	if resp.GetRevision() == known {
-		return nil
-	}
 	if resp.GetConfig() == nil {
+		if resp.GetRevision() == known {
+			return nil
+		}
 		return errors.New("oracache/gateway: CP returned a new revision without a config")
 	}
 	if resp.GetConfig().GetRevision() != resp.GetRevision() {
@@ -98,14 +98,22 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("oracache/gateway: invalid config: %w", err)
 	}
-	if err := p.Router.Apply(cfg); err != nil {
-		return fmt.Errorf("oracache/gateway: apply config: %w", err)
+	if err := p.Router.ApplyView(cfg); err != nil {
+		return fmt.Errorf("oracache/gateway: apply live view: %w", err)
 	}
-	p.logger().Info("gateway routing map updated",
-		"node_id", p.NodeID,
-		"region", p.Router.Region(),
-		"config_revision", cfg.Revision,
-	)
+	if resp.GetRevision() == known {
+		p.logger().Debug("gateway live view refreshed",
+			"node_id", p.NodeID,
+			"region", p.Router.Region(),
+			"config_revision", cfg.Revision,
+		)
+	} else {
+		p.logger().Info("gateway routing map updated",
+			"node_id", p.NodeID,
+			"region", p.Router.Region(),
+			"config_revision", cfg.Revision,
+		)
+	}
 	return nil
 }
 
