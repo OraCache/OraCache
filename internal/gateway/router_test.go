@@ -411,3 +411,67 @@ func TestRouterApplyViewSkipsNotWritableMaster(t *testing.T) {
 		t.Fatalf("WriteLeader(0) error = %v, want ErrNoLeader", err)
 	}
 }
+
+func TestRouterRoutesSnapshot(t *testing.T) {
+	t.Parallel()
+	router, err := gateway.NewRouter("eu")
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	empty := router.Routes()
+	if empty.Ready() {
+		t.Fatalf("empty router reports ready: %+v", empty)
+	}
+	if empty.LocalRegion != "eu" {
+		t.Fatalf("local region = %q", empty.LocalRegion)
+	}
+
+	if err := router.Apply(cpconfigtest.Config(3)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	snapshot := router.Routes()
+	if !snapshot.Ready() {
+		t.Fatalf("configured router not ready: %+v", snapshot)
+	}
+	if snapshot.Revision != 3 || snapshot.MasterRegion != "eu" {
+		t.Fatalf("snapshot metadata = %+v", snapshot)
+	}
+	if snapshot.PartitionCount != cpconfigtest.PartitionCount {
+		t.Fatalf("partition count = %d", snapshot.PartitionCount)
+	}
+	if len(snapshot.ReadRoutes) != int(cpconfigtest.PartitionCount) {
+		t.Fatalf("read routes = %d, want %d", len(snapshot.ReadRoutes), cpconfigtest.PartitionCount)
+	}
+	if len(snapshot.WriteRoutes) != int(cpconfigtest.PartitionCount) {
+		t.Fatalf("write routes = %d, want %d", len(snapshot.WriteRoutes), cpconfigtest.PartitionCount)
+	}
+	if snapshot.MissingReads() != 0 || snapshot.MissingWrites() != 0 {
+		t.Fatalf("missing reads=%d writes=%d, want 0", snapshot.MissingReads(), snapshot.MissingWrites())
+	}
+	if leader := snapshot.ReadRoutes[0]; leader.NodeID != "eu-1" {
+		t.Fatalf("read route for partition 0 = %+v", leader)
+	}
+}
+
+func TestRouterRoutesSnapshotReportsGaps(t *testing.T) {
+	t.Parallel()
+	router, _ := gateway.NewRouter("eu")
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	view := cpconfigtest.Config(1)
+	view.Nodes[0].State = cpconfig.NodeStateDead // eu-1
+	if err := router.ApplyView(view); err != nil {
+		t.Fatalf("ApplyView: %v", err)
+	}
+	snapshot := router.Routes()
+	if snapshot.MissingReads() != int(cpconfigtest.PartitionCount/2) {
+		t.Fatalf("missing reads = %d, want %d", snapshot.MissingReads(), cpconfigtest.PartitionCount/2)
+	}
+	if snapshot.MissingWrites() != int(cpconfigtest.PartitionCount/2) {
+		t.Fatalf("missing writes = %d, want %d", snapshot.MissingWrites(), cpconfigtest.PartitionCount/2)
+	}
+	if _, ok := snapshot.ReadRoutes[0]; ok {
+		t.Fatal("dead-leader partition still has a read route")
+	}
+}

@@ -14,8 +14,12 @@
 /internal/cpconfig/ @pluplohapy
 /internal/statestore/ @pluplohapy
 /internal/cpagent/ @pluplohapy
+/internal/cpmetrics/ @pluplohapy
 /internal/partition/ @pluplohapy
 /cmd/cp-api/ @pluplohapy
+/cmd/oracache-node/ @pluplohapy
+/cmd/api-gateway/ @pluplohapy @petruekhin
+/configs/ @pluplohapy
 
 # Gateway и Data Plane.
 /internal/gateway/ @pluplohapy @petruekhin

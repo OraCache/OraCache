@@ -191,6 +191,84 @@ func TestNewValidationAndDefaults(t *testing.T) {
 	}
 }
 
+// newLoopAgent создаёт агента для проверки расписания heartbeat.
+func newLoopAgent(t *testing.T, interval time.Duration, hintMs uint32) (*Agent, *fakeClock) {
+	t.Helper()
+	clock := &fakeClock{now: time.Unix(1000, 0).UTC()}
+	agent, err := New(Options{
+		NodeID: "eu-1",
+		Region: "eu",
+		Client: &fakeClient{heartbeatFn: func(context.Context, *controlplanev1.HeartbeatRequest) (*controlplanev1.HeartbeatResponse, error) {
+			return &controlplanev1.HeartbeatResponse{
+				Accepted:             true,
+				ConfigRevision:       0,
+				NextHeartbeatAfterMs: hintMs,
+			}, nil
+		}},
+		Statuses:          StatusProviderFunc(testStatuses),
+		Clock:             clock,
+		Logger:            discardLogger(),
+		DisableJitter:     true,
+		HeartbeatInterval: interval,
+		RPCTimeout:        time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return agent, clock
+}
+
+// runHeartbeatOnce запускает heartbeatLoop и ждёт первого запланированного
+// таймера, затем отменяет контекст.
+func runHeartbeatOnce(t *testing.T, agent *Agent, clock *fakeClock) time.Duration {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		agent.heartbeatLoop(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(clock.timerDelays()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("heartbeatLoop did not stop")
+	}
+	delays := clock.timerDelays()
+	if len(delays) == 0 {
+		t.Fatal("no heartbeat delay was scheduled")
+	}
+	return delays[0]
+}
+
+func TestHeartbeatLoopUsesServerHintWhenIntervalUnset(t *testing.T) {
+	t.Parallel()
+	agent, clock := newLoopAgent(t, 0, 7000)
+	if got := runHeartbeatOnce(t, agent, clock); got != 7*time.Second {
+		t.Fatalf("delay = %v, want 7s from the CP hint", got)
+	}
+}
+
+func TestHeartbeatLoopFixedIntervalOverridesHint(t *testing.T) {
+	t.Parallel()
+	agent, clock := newLoopAgent(t, 2*time.Second, 7000)
+	if got := runHeartbeatOnce(t, agent, clock); got != 2*time.Second {
+		t.Fatalf("delay = %v, want the fixed 2s, not the hint", got)
+	}
+}
+
+func TestHeartbeatLoopFallsBackToDefaultWithoutHint(t *testing.T) {
+	t.Parallel()
+	agent, clock := newLoopAgent(t, 0, 0)
+	if got := runHeartbeatOnce(t, agent, clock); got != DefaultHeartbeatInterval {
+		t.Fatalf("delay = %v, want %v", got, DefaultHeartbeatInterval)
+	}
+}
+
 func TestSendHeartbeatContract(t *testing.T) {
 	t.Parallel()
 	holder := cpconfig.NewHolder()

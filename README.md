@@ -180,22 +180,74 @@ Go клиент и интерфейс сервера находятся в `gen/
   `ready/readable/writable` конкретной партиции; мёртвые и not-ready ноды и
   партиции не маршрутизируются. Legacy `cmd/gateway`/`internal/cache` не
   затронуты.
-- `internal/partition` — стабильный xxhash64 и fixed partition mapping.
-- `cmd/cp-api` — plaintext gRPC сервер; `-listen`, `-node-ttl` и опциональный
-  `-config` с JSON snapshot.
+- `internal/partition` — стабильный xxhash64, fixed partition mapping и
+  парсер спецификаций партиций (`all`/`even`/`odd`/`1-9`/`0,2,5-9`).
+- `internal/cpmetrics` — реестр метрик CP в формате Prometheus text exposition
+  без внешних зависимостей.
+- `cmd/cp-api` — plaintext gRPC сервер CP API: `-listen`, `-node-ttl`,
+  `-metrics-listen` и `-config`/`-dev-cluster`.
+- `cmd/oracache-node` — PoC Storage Node: heartbeat-источник со статической
+  топологией внутри шарда; локальные partition-группы отдаёт по HTTP.
+- `cmd/api-gateway` — PoC target Gateway: тянет состав кластера из CP и держит
+  routing map, который отдаёт по HTTP `/routes`.
 
 ```sh
 make build
-./bin/cp-api -listen 127.0.0.1:50052
-# опционально: ./bin/cp-api -listen 127.0.0.1:50052 -config /path/to/cp.json -node-ttl 15s
+
+# Вариант 1: синтетический кластер (2 региона × 2 ноды × 128 партиций)
+./bin/cp-api -dev-cluster -listen 127.0.0.1:50052 -node-ttl 15s
+
+# Вариант 2: свой bootstrap JSON
+./bin/cp-api -listen 127.0.0.1:50052 -config /path/to/cp.json
 ```
 
-Без `-config` CP API принимает heartbeat, но не отдаёт routing map: assignments
-публикует владелец snapshot (в Phase 1 — bootstrap-файл, позже
-Controller/Scheduler через etcd). JSON использует поля `revision`,
-`partition_count`, `regions`, `nodes`, `partitions`; роль региона —
-`master`/`slave`. Валидация требует ровно один master-регион, полный набор
-assignments для каждого объявленного региона и лидера внутри его реплик.
+Формат JSON — `revision`, `partition_count`, `regions`, `nodes`, `partitions`;
+роль региона — `master`/`slave`. Валидация требует ровно один master-регион,
+полный набор assignments для каждого объявленного региона и лидера внутри его
+реплик. Пример с уменьшенным числом партиций —
+[`configs/cp-dev.json`](configs/cp-dev.json).
+
+### Локальный сценарий control plane
+
+Четыре команды дают полный PoC из задачи #35: ноды шлют heartbeat, gateway
+периодически забирает состав и знает, куда маршрутизировать.
+
+```sh
+# 1. CP API. node-ttl задаёт TTL liveness; интервал heartbeat нод по
+#    умолчанию 5 с, поэтому TTL должен быть больше него.
+./bin/cp-api -dev-cluster -listen 127.0.0.1:50052 -node-ttl 15s
+
+# 2. Две ноды: каждая держит все партиции региона и лидирует в своей половине.
+#    -status-listen обязателен разным у каждой ноды: дефолт общий.
+./bin/oracache-node -node-id eu-1 -region eu -status-listen 127.0.0.1:9465 \
+  -partitions all -leader-partitions even -heartbeat-interval 1s
+./bin/oracache-node -node-id eu-2 -region eu -status-listen 127.0.0.1:9467 \
+  -partitions all -leader-partitions odd  -heartbeat-interval 1s
+
+# 3. Gateway тянет live-view и держит routing map.
+./bin/api-gateway -region eu -node-id gw-eu-1 -poll-interval 2s
+```
+
+Проверка:
+
+```sh
+# Локальные partition-группы ноды (128 групп, роль и готовность).
+curl localhost:9465/partitions
+
+# Routing map gateway: 128 read/write маршрутов, лидеры чередуются.
+curl localhost:9466/routes
+
+# Метрики CP: heartbeat, config pull, live-ноды по состояниям.
+curl localhost:9464/metrics | grep oracache_cp_
+```
+
+Отказ ноды: после остановки `eu-1` и истечения TTL маршруты партиций, где она
+лидер, исчезают (`read_routes` становится меньше 128), а `config_revision`
+**не меняется** — liveness не создаёт новую revision конфигурации.
+
+Спецификации партиций: `all`, `even`, `odd`, `1-9`, `0,2,5-9` и их список.
+Флаг `-heartbeat-interval` фиксирует интервал и имеет приоритет над
+подсказкой CP API; без него агент следует подсказке (по умолчанию 5 с).
 
 **Ограничение Phase 1:** состояние in-memory и теряется при рестарте CP API;
 live-view тоже process-local и строится по heartbeat с TTL 15 с. После рестарта
@@ -235,7 +287,7 @@ Make запускает тесты и vet каждого модуля с `GOWORK
 ## Проверки и генерация
 
 ```sh
-make build                # bin/gateway, bin/oracache и bin/cp-api
+make build                # bin/gateway, bin/oracache, bin/cp-api, bin/oracache-node, bin/api-gateway
 make test                 # root (legacy gateway + CP Phase 1) + protobuf + CLI, -race
 make test-gateway         # только корневой модуль (legacy gateway + CP Phase 1)
 make test-protobuf        # компиляция API; сейчас нет test cases

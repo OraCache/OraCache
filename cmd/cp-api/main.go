@@ -3,6 +3,9 @@
 // В Phase 1 состояние хранится в памяти. В production его заменит etcd за той же
 // границей statestore.Store; см.
 // docs/architecture/ADR-001-cp-phase1-in-memory-store.md.
+//
+// Метрики Control Plane отдаются отдельным HTTP-портом в формате Prometheus
+// text exposition. Пустая строка в -metrics-listen отключает endpoint.
 package main
 
 import (
@@ -11,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,26 +26,73 @@ import (
 	"google.golang.org/grpc"
 )
 
-func newServer(store statestore.Store, logger *slog.Logger, opts ...cpapi.Option) *grpc.Server {
+const defaultMetricsListen = "127.0.0.1:9464"
+
+func newServer(store statestore.Store, logger *slog.Logger, opts ...cpapi.Option) (*grpc.Server, *cpapi.Server) {
+	api := cpapi.New(store, append([]cpapi.Option{cpapi.WithLogger(logger)}, opts...)...)
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
-	options := append([]cpapi.Option{cpapi.WithLogger(logger)}, opts...)
-	controlplanev1.RegisterControlPlaneAPIServer(server, cpapi.New(store, options...))
-	return server
+	controlplanev1.RegisterControlPlaneAPIServer(server, api)
+	return server, api
+}
+
+// serveMetrics поднимает /metrics. Ошибка listener'а возвращается, чтобы main
+// завершился с понятным диагнозом, а не потерял endpoint молча.
+func serveMetrics(listen string, api *cpapi.Server, logger *slog.Logger) error {
+	if listen == "" {
+		return nil
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", api.Metrics().Handler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	metricsListener, err := net.Listen("tcp", listen)
+	if err != nil {
+		return err
+	}
+	go func() {
+		if err := http.Serve(metricsListener, mux); err != nil {
+			logger.Error("metrics server stopped", "address", listen, "error", err)
+		}
+	}()
+	logger.Info("cp-api metrics listening", "address", metricsListener.Addr().String())
+	return nil
 }
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:50052", "plaintext gRPC listen address (use port 0 for an ephemeral port)")
 	configPath := flag.String("config", "", "optional JSON config snapshot loaded into the in-memory store")
 	nodeTTL := flag.Duration("node-ttl", cpapi.DefaultNodeTTL, "node liveness TTL without heartbeat")
+	devCluster := flag.Bool("dev-cluster", false, "load a synthetic 2-region, 2-node-per-region, 128-partition cluster instead of -config")
+	metricsListen := flag.String("metrics-listen", defaultMetricsListen, `HTTP listen address for /metrics and /healthz ("none" disables)`)
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
+		os.Exit(2)
+	}
+	if *metricsListen == "none" {
+		*metricsListen = ""
+	}
+
+	if *devCluster && *configPath != "" {
+		fmt.Fprintln(os.Stderr, "-dev-cluster and -config are mutually exclusive")
 		os.Exit(2)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	store := statestore.NewMemory()
 	revision := uint64(0)
+	if *devCluster {
+		cfg := cpconfig.SyntheticDevCluster()
+		if err := store.ApplyConfig(context.Background(), cfg); err != nil {
+			logger.Error("apply dev cluster", "error", err)
+			os.Exit(1)
+		}
+		revision = cfg.Revision
+		logger.Info("loaded synthetic dev cluster", "partitions", cfg.PartitionCount, "regions", len(cfg.Regions))
+	}
 	if *configPath != "" {
 		cfg, err := cpconfig.LoadFile(*configPath)
 		if err != nil {
@@ -60,7 +111,12 @@ func main() {
 		logger.Error("listen", "address", *listen, "error", err)
 		os.Exit(1)
 	}
-	server := newServer(store, logger, cpapi.WithNodeTTL(*nodeTTL))
+	server, api := newServer(store, logger, cpapi.WithNodeTTL(*nodeTTL))
+	if err := serveMetrics(*metricsListen, api, logger); err != nil {
+		logger.Error("metrics listen", "address", *metricsListen, "error", err)
+		_ = listener.Close()
+		os.Exit(1)
+	}
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)

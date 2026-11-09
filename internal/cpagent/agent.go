@@ -83,7 +83,7 @@ type Options struct {
 	Clock  Clock
 	Logger *slog.Logger
 
-	HeartbeatInterval  time.Duration
+	HeartbeatInterval  time.Duration // <= 0: follow the CP hint
 	ConfigPullInterval time.Duration
 	RPCTimeout         time.Duration
 	// JitterFraction задаёт разброс агентов в [0,1]. Ноль выбирает 10% по умолчанию.
@@ -104,10 +104,11 @@ type Agent struct {
 	clock    Clock
 	log      *slog.Logger
 
-	heartbeatInterval  time.Duration
-	configPullInterval time.Duration
-	rpcTimeout         time.Duration
-	jitterFraction     float64
+	heartbeatInterval   time.Duration
+	heartbeatFollowHint bool
+	configPullInterval  time.Duration
+	rpcTimeout          time.Duration
+	jitterFraction      float64
 
 	pullNow chan struct{}
 }
@@ -138,7 +139,10 @@ func New(opts Options) (*Agent, error) {
 	if opts.Holder == nil {
 		opts.Holder = cpconfig.NewHolder()
 	}
-	if opts.HeartbeatInterval <= 0 {
+	// Неотрицательный интервал фиксируется оператором и имеет приоритет над
+	// подсказкой CP API; ноль означает «следовать подсказке сервера».
+	heartbeatFollowHint := opts.HeartbeatInterval <= 0
+	if heartbeatFollowHint {
 		opts.HeartbeatInterval = DefaultHeartbeatInterval
 	}
 	if opts.ConfigPullInterval <= 0 {
@@ -155,19 +159,20 @@ func New(opts Options) (*Agent, error) {
 		jitterFraction = 0
 	}
 	return &Agent{
-		nodeID:             opts.NodeID,
-		region:             opts.Region,
-		instance:           opts.Instance,
-		client:             opts.Client,
-		statuses:           opts.Statuses,
-		holder:             opts.Holder,
-		clock:              opts.Clock,
-		log:                opts.Logger,
-		heartbeatInterval:  opts.HeartbeatInterval,
-		configPullInterval: opts.ConfigPullInterval,
-		rpcTimeout:         opts.RPCTimeout,
-		jitterFraction:     jitterFraction,
-		pullNow:            make(chan struct{}, 1),
+		nodeID:              opts.NodeID,
+		region:              opts.Region,
+		instance:            opts.Instance,
+		client:              opts.Client,
+		statuses:            opts.Statuses,
+		holder:              opts.Holder,
+		clock:               opts.Clock,
+		log:                 opts.Logger,
+		heartbeatInterval:   opts.HeartbeatInterval,
+		heartbeatFollowHint: heartbeatFollowHint,
+		configPullInterval:  opts.ConfigPullInterval,
+		rpcTimeout:          opts.RPCTimeout,
+		jitterFraction:      jitterFraction,
+		pullNow:             make(chan struct{}, 1),
 	}, nil
 }
 
@@ -206,7 +211,7 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 			return
 		}
 		base := a.heartbeatInterval
-		if next > 0 {
+		if a.heartbeatFollowHint && next > 0 {
 			base = clampDuration(next, minInterval, maxHeartbeatInterval)
 		}
 		if err != nil {

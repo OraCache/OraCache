@@ -15,6 +15,7 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/statestore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -62,6 +63,16 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
+// WithMetrics подменяет реестр метрик. По умолчанию создаётся новый, доступный
+// через Server.Metrics.
+func WithMetrics(metrics *cpmetrics.Metrics) Option {
+	return func(s *Server) {
+		if metrics != nil {
+			s.metrics = metrics
+		}
+	}
+}
+
 // WithHeartbeatInterval переопределяет интервал, который сообщается CP Agent.
 // По умолчанию используется DefaultHeartbeatInterval.
 func WithHeartbeatInterval(interval time.Duration) Option {
@@ -91,6 +102,7 @@ type Server struct {
 	log               *slog.Logger
 	heartbeatInterval time.Duration
 	nodeTTL           time.Duration
+	metrics           *cpmetrics.Metrics
 }
 
 // New создаёт сервер CP API. store не должен быть nil.
@@ -104,6 +116,7 @@ func New(store statestore.Store, opts ...Option) *Server {
 		log:               slog.Default(),
 		heartbeatInterval: DefaultHeartbeatInterval,
 		nodeTTL:           DefaultNodeTTL,
+		metrics:           cpmetrics.New(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -111,10 +124,14 @@ func New(store statestore.Store, opts ...Option) *Server {
 	return s
 }
 
+// Metrics возвращает реестр метрик сервера для экспозиции /metrics.
+func (s *Server) Metrics() *cpmetrics.Metrics { return s.metrics }
+
 // ReportHeartbeat реализует controlplanev1.ControlPlaneAPI. Он сохраняет полный
 // snapshot локальных partition-групп и возвращает текущую revision конфигурации.
 func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.HeartbeatRequest) (*controlplanev1.HeartbeatResponse, error) {
 	if req == nil {
+		s.metrics.Heartbeat(cpmetrics.HeartbeatInvalid)
 		return nil, status.Error(codes.InvalidArgument, "heartbeat request is required")
 	}
 	if err := validateID("node_id", req.GetNodeId()); err != nil {
@@ -127,6 +144,7 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 		return nil, status.Error(codes.InvalidArgument, "instance is too long")
 	}
 	if len(req.GetPartitions()) > int(cpconfig.DefaultPartitionCount) {
+		s.metrics.Heartbeat(cpmetrics.HeartbeatInvalid)
 		return nil, status.Errorf(codes.InvalidArgument, "too many partitions: %d", len(req.GetPartitions()))
 	}
 
@@ -181,11 +199,14 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 	revision, err := s.store.UpsertHeartbeat(ctx, heartbeat)
 	if err != nil {
 		if errors.Is(err, statestore.ErrInvalidHeartbeat) {
+			s.metrics.Heartbeat(cpmetrics.HeartbeatInvalid)
 			return nil, status.Error(codes.InvalidArgument, "invalid heartbeat")
 		}
+		s.metrics.Heartbeat(cpmetrics.HeartbeatError)
 		s.log.ErrorContext(ctx, "store heartbeat failed", "node_id", heartbeat.NodeID, "region", heartbeat.Region, "error", err)
 		return nil, status.Error(codes.Unavailable, "heartbeat store unavailable")
 	}
+	s.metrics.Heartbeat(cpmetrics.HeartbeatAccepted)
 	s.log.DebugContext(ctx, "heartbeat accepted",
 		"node_id", heartbeat.NodeID,
 		"region", heartbeat.Region,
@@ -204,6 +225,7 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 // Node при совпадении revision получает только revision и сохраняет last-known-good.
 func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
 	if req == nil {
+		s.metrics.ConfigPull(cpmetrics.PullError)
 		return nil, status.Error(codes.InvalidArgument, "config request is required")
 	}
 	if err := validateID("node_id", req.GetNodeId()); err != nil {
@@ -226,10 +248,12 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 		snapshot, err = s.store.Config(ctx)
 	}
 	if err != nil {
+		s.metrics.ConfigPull(cpmetrics.PullError)
 		s.log.ErrorContext(ctx, "store config failed", "node_id", req.GetNodeId(), "error", err)
 		return nil, status.Error(codes.Unavailable, "config store unavailable")
 	}
 	if req.GetKnownRevision() > snapshot.Revision {
+		s.metrics.ConfigPull(cpmetrics.PullAhead)
 		return nil, status.Errorf(codes.FailedPrecondition, "known revision %d is ahead of CP revision %d", req.GetKnownRevision(), snapshot.Revision)
 	}
 	if snapshot.Config == nil {
@@ -248,12 +272,16 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 		return nil, status.Error(codes.Internal, "config snapshot is inconsistent")
 	}
 	if req.GetKnownRevision() == snapshot.Revision && !gateway {
+		s.metrics.ConfigPull(cpmetrics.PullUnchanged)
 		return &controlplanev1.GetConfigResponse{Revision: snapshot.Revision}, nil
 	}
 	response := &controlplanev1.GetConfigResponse{
 		Revision: snapshot.Revision,
 		Config:   snapshot.Config.ToProto(),
 	}
+	s.metrics.ConfigPull(cpmetrics.PullServed)
+	s.metrics.SetConfigRevision(snapshot.Revision)
+	s.metrics.SetLiveNodes(countNodeStates(snapshot.Config))
 	s.log.DebugContext(ctx, "config served",
 		"node_id", req.GetNodeId(),
 		"kind", req.GetKind().String(),
@@ -261,6 +289,29 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 		"revision", response.Revision,
 	)
 	return response, nil
+}
+
+// countNodeStates считает ноды по состояниям live-view для метрики.
+func countNodeStates(config *cpconfig.Config) map[string]uint64 {
+	counts := map[string]uint64{}
+	if config == nil {
+		return counts
+	}
+	for _, node := range config.Nodes {
+		switch node.State {
+		case cpconfig.NodeStateReady:
+			counts[cpmetrics.NodeStateReady]++
+		case cpconfig.NodeStateStarting:
+			counts[cpmetrics.NodeStateStarting]++
+		case cpconfig.NodeStateDraining:
+			counts[cpmetrics.NodeStateDraining]++
+		case cpconfig.NodeStateDead:
+			counts[cpmetrics.NodeStateDead]++
+		default:
+			counts[cpmetrics.NodeStateOther]++
+		}
+	}
+	return counts
 }
 
 func validateID(field, value string) error {

@@ -1,0 +1,244 @@
+{
+  "revision": 1,
+  "partition_count": 8,
+  "regions": [
+    {
+      "id": "eu",
+      "role": "master",
+      "gateway_endpoints": [
+        "127.0.0.1:50061"
+      ]
+    },
+    {
+      "id": "us",
+      "role": "slave",
+      "gateway_endpoints": [
+        "127.0.0.1:50062"
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "eu-1",
+      "region": "eu",
+      "address": "127.0.0.1:50151",
+      "state": "ready",
+      "zone": "eu-a"
+    },
+    {
+      "id": "eu-2",
+      "region": "eu",
+      "address": "127.0.0.1:50152",
+      "state": "ready",
+      "zone": "eu-b"
+    },
+    {
+      "id": "us-1",
+      "region": "us",
+      "address": "127.0.0.1:50153",
+      "state": "ready",
+      "zone": "us-a"
+    },
+    {
+      "id": "us-2",
+      "region": "us",
+      "address": "127.0.0.1:50154",
+      "state": "ready",
+      "zone": "us-b"
+    }
+  ],
+  "partitions": [
+    {
+      "partition_id": 0,
+      "region": "eu",
+      "leader_node_id": "eu-1",
+      "replica_node_ids": [
+        "eu-1",
+        "eu-2"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": true
+    },
+    {
+      "partition_id": 0,
+      "region": "us",
+      "leader_node_id": "us-1",
+      "replica_node_ids": [
+        "us-1",
+        "us-2"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": false
+    },
+    {
+      "partition_id": 1,
+      "region": "eu",
+      "leader_node_id": "eu-2",
+      "replica_node_ids": [
+        "eu-2",
+        "eu-1"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": true
+    },
+    {
+      "partition_id": 1,
+      "region": "us",
+      "leader_node_id": "us-2",
+      "replica_node_ids": [
+        "us-2",
+        "us-1"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": false
+    },
+    {
+      "partition_id": 2,
+      "region": "eu",
+      "leader_node_id": "eu-1",
+      "replica_node_ids": [
+        "eu-1",
+        "eu-2"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": true
+    },
+    {
+      "partition_id": 2,
+      "region": "us",
+      "leader_node_id": "us-1",
+      "replica_node_ids": [
+        "us-1",
+        "us-2"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": false
+    },
+    {
+      "partition_id": 3,
+      "region": "eu",
+      "leader_node_id": "eu-2",
+      "replica_node_ids": [
+        "eu-2",
+        "eu-1"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": true
+    },
+    {
+      "partition_id": 3,
+      "region": "us",
+      "leader_node_id": "us-2",
+      "replica_node_ids": [
+        "us-2",
+        "us-1"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": false
+    },
+    {
+      "partition_id": 4,
+      "region": "eu",
+      "leader_node_id": "eu-1",
+      "replica_node_ids": [
+        "eu-1",
+        "eu-2"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": true
+    },
+    {
+      "partition_id": 4,
+      "region": "us",
+      "leader_node_id": "us-1",
+      "replica_node_ids": [
+        "us-1",
+        "us-2"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": false
+    },
+    {
+      "partition_id": 5,
+      "region": "eu",
+      "leader_node_id": "eu-2",
+      "replica_node_ids": [
+        "eu-2",
+        "eu-1"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": true
+    },
+    {
+      "partition_id": 5,
+      "region": "us",
+      "leader_node_id": "us-2",
+      "replica_node_ids": [
+        "us-2",
+        "us-1"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": false
+    },
+    {
+      "partition_id": 6,
+      "region": "eu",
+      "leader_node_id": "eu-1",
+      "replica_node_ids": [
+        "eu-1",
+        "eu-2"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": true
+    },
+    {
+      "partition_id": 6,
+      "region": "us",
+      "leader_node_id": "us-1",
+      "replica_node_ids": [
+        "us-1",
+        "us-2"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": false
+    },
+    {
+      "partition_id": 7,
+      "region": "eu",
+      "leader_node_id": "eu-2",
+      "replica_node_ids": [
+        "eu-2",
+        "eu-1"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": true
+    },
+    {
+      "partition_id": 7,
+      "region": "us",
+      "leader_node_id": "us-2",
+      "replica_node_ids": [
+        "us-2",
+        "us-1"
+      ],
+      "ready": true,
+      "readable": true,
+      "writable": false
+    }
+  ]
+}
