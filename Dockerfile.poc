@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+# One image with the three PoC server binaries; Compose selects the entrypoint.
+FROM golang:1.27.3-alpine AS build
+ARG TARGETPLATFORM
+WORKDIR /src
+ENV GOWORK=off
+COPY go.mod go.sum ./
+COPY gen/go.mod gen/go.sum ./gen/
+RUN go mod download
+COPY cmd/cp-api ./cmd/cp-api
+COPY cmd/storage-node ./cmd/storage-node
+COPY cmd/cache-gateway ./cmd/cache-gateway
+COPY internal ./internal
+COPY shardraft ./shardraft
+COPY gen ./gen
+RUN --mount=type=cache,id=oracache-go1.27.3-${TARGETPLATFORM},target=/root/.cache/go-build,sharing=locked \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/cp-api ./cmd/storage-node ./cmd/cache-gateway
+
+FROM scratch
+COPY --from=build /out/cp-api /out/storage-node /out/cache-gateway /
+USER 65532:65532

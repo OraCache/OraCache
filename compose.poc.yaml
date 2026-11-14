@@ -1,0 +1,70 @@
+# Single-region, single-shard PoC: CP + gateway + three storage-node processes.
+#   docker compose -f compose.poc.yaml up -d --build
+# Client endpoint (stable gateway): 127.0.0.1:28080. Everything is in memory.
+# A node that is killed or stopped is not meant to be restarted into the group.
+name: oracache-poc
+
+x-node: &node
+  image: oracache-poc:local
+  pull_policy: never
+  restart: "no"
+  depends_on: [cp]
+
+services:
+  cp:
+    image: oracache-poc:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile.poc
+    restart: "no"
+    entrypoint: ["/cp-api"]
+    command: ["--listen", "0.0.0.0:50052", "--config", "/etc/oracache/cp.json", "--status-listen", "0.0.0.0:8080"]
+    volumes:
+      - ./deploy/poc/cp.json:/etc/oracache/cp.json:ro
+    ports:
+      - "127.0.0.1:${ORACACHE_POC_CP_PORT:-28081}:50052"
+      - "127.0.0.1:${ORACACHE_POC_CP_STATUS_PORT:-28082}:8080"
+
+  node-1:
+    <<: *node
+    entrypoint: ["/storage-node"]
+    command: [--region=region-a, --group-id=region-a/shard-0/poc-1,
+      "--peer=1,node-1,node-1:9001,http://node-1:9101/raft",
+      "--peer=2,node-2,node-2:9001,http://node-2:9101/raft",
+      "--peer=3,node-3,node-3:9001,http://node-3:9101/raft",
+      "--grpc-listen=0.0.0.0:9001", "--raft-listen=0.0.0.0:9101", "--cp-addr=cp:50052",
+      --node-id=node-1, --peer-id=1]
+    ports: ["127.0.0.1:${ORACACHE_POC_NODE1_PORT:-28091}:9101"]
+
+  node-2:
+    <<: *node
+    entrypoint: ["/storage-node"]
+    command: [--region=region-a, --group-id=region-a/shard-0/poc-1,
+      "--peer=1,node-1,node-1:9001,http://node-1:9101/raft",
+      "--peer=2,node-2,node-2:9001,http://node-2:9101/raft",
+      "--peer=3,node-3,node-3:9001,http://node-3:9101/raft",
+      "--grpc-listen=0.0.0.0:9001", "--raft-listen=0.0.0.0:9101", "--cp-addr=cp:50052",
+      --node-id=node-2, --peer-id=2]
+    ports: ["127.0.0.1:${ORACACHE_POC_NODE2_PORT:-28092}:9101"]
+
+  node-3:
+    <<: *node
+    entrypoint: ["/storage-node"]
+    command: [--region=region-a, --group-id=region-a/shard-0/poc-1,
+      "--peer=1,node-1,node-1:9001,http://node-1:9101/raft",
+      "--peer=2,node-2,node-2:9001,http://node-2:9101/raft",
+      "--peer=3,node-3,node-3:9001,http://node-3:9101/raft",
+      "--grpc-listen=0.0.0.0:9001", "--raft-listen=0.0.0.0:9101", "--cp-addr=cp:50052",
+      --node-id=node-3, --peer-id=3]
+    ports: ["127.0.0.1:${ORACACHE_POC_NODE3_PORT:-28093}:9101"]
+
+  gateway:
+    image: oracache-poc:local
+    pull_policy: never
+    restart: "no"
+    depends_on: [cp]
+    entrypoint: ["/cache-gateway"]
+    command: ["--listen", "0.0.0.0:50051", "--cp-addr", "cp:50052", "--region", "region-a"]
+    ports:
+      - "127.0.0.1:${ORACACHE_POC_GATEWAY_PORT:-28080}:50051"

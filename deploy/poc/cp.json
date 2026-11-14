@@ -1,0 +1,15 @@
+{
+  "revision": 1,
+  "partition_count": 1,
+  "regions": [
+    {"id": "region-a", "role": "master", "gateway_endpoints": ["gateway:50051"]}
+  ],
+  "nodes": [
+    {"id": "node-1", "region": "region-a", "address": "node-1:9001", "state": "ready"},
+    {"id": "node-2", "region": "region-a", "address": "node-2:9001", "state": "ready"},
+    {"id": "node-3", "region": "region-a", "address": "node-3:9001", "state": "ready"}
+  ],
+  "partitions": [
+    {"partition_id": 0, "region": "region-a", "leader_node_id": "node-1", "replica_node_ids": ["node-1", "node-2", "node-3"]}
+  ]
+}
