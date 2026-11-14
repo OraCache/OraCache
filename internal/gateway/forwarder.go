@@ -27,8 +27,11 @@ import (
 //     leader address from the hint, if any, otherwise at the next replica.
 //   - Unavailable moves on to the next replica. For writes this can be
 //     ambiguous (the node may have proposed before it died): an unconditional
-//     Put retried this way can create an extra version; callers needing
-//     exactly-once use expected_rev. DeadlineExceeded is never retried for writes.
+//     Put retried this way can create an extra version. A conditional Put
+//     (expected_rev) cannot be applied twice, but after an ambiguous failure the
+//     retry may report CONFLICT even though the first attempt succeeded: the
+//     original outcome is not recoverable. This is not an exactly-once API.
+//     DeadlineExceeded is never retried for writes.
 //   - Total work is bounded by MaxAttempts and one overall Timeout. CP is never
 //     contacted on the request path and assignments are never rewritten.
 type Forwarder struct {

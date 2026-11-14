@@ -65,7 +65,11 @@ storage node = [ gRPC adapter -> shardraft.Instance -> versioned LRU store ]
 4. **Retry safety.** NOT_LEADER is a guaranteed pre-proposal refusal and is
    always retried. Transport failures may be ambiguous for writes; an
    unconditional Put retried after such a failure may create an extra version.
-   Callers needing exactly-once semantics use `expected_rev`.
+   A conditional Put (`expected_rev`) cannot mutate twice, but it does not give
+   exactly-once semantics either: if the first attempt committed and the reply
+   was lost, the retry reports `CONFLICT` (or a newer revision), and the
+   original outcome cannot be recovered. There is no request-ID deduplication;
+   callers must treat ambiguous failures as "unknown" and re-read.
 5. **Process-level failover.** Killing the leader process leaves a 2-of-3
    quorum, which elects a new leader; the same gateway endpoint resumes
    serving. Data written before the kill remains readable (it was replicated).
