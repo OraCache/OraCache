@@ -92,3 +92,62 @@ jobs:
           paths: .reports/*.xml
           show: 'all'
           folded: true
+  poc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Overrides `name:` in compose.poc.yaml, so cleanup can only touch this run's project.
+      COMPOSE_PROJECT_NAME: oracache-poc-ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            gen/go.sum
+            cmd/oracache/go.sum
+            integration/e2e/go.sum
+            Makefile
+      - name: Validate PoC CI wiring
+        run: bash scripts/check-poc-ci.sh
+      - name: Build CLI
+        run: go build -o bin/oracache ./cmd/oracache
+      - uses: docker/setup-buildx-action@v3
+      # One build of the shared image; cp/node-*/gateway all use oracache-poc:local.
+      - name: Build PoC image with persistent layer cache
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.poc
+          push: false
+          load: true
+          tags: oracache-poc:local
+          cache-from: type=gha,scope=oracache-poc
+          cache-to: type=gha,scope=oracache-poc,mode=max
+      - name: Start isolated PoC project
+        run: docker compose -f compose.poc.yaml up -d --no-build
+      - name: CLI smoke and kill-leader failover
+        run: bash scripts/poc-smoke.sh
+      - name: Collect diagnostics
+        if: failure()
+        run: |
+          mkdir -p .poc-diag
+          docker compose -f compose.poc.yaml ps -a > .poc-diag/ps.txt 2>&1 || true
+          docker compose -f compose.poc.yaml config > .poc-diag/config.yaml 2>&1 || true
+          docker compose -f compose.poc.yaml logs --no-color --timestamps > .poc-diag/compose.log 2>&1 || true
+          for p in 28081 28082 28091 28092 28093; do
+            curl -sS --max-time 3 "http://127.0.0.1:$p/status" > ".poc-diag/status-$p.txt" 2>&1 || true
+          done
+      - name: Upload PoC diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc-diagnostics
+          path: .poc-diag/
+          include-hidden-files: true
+          if-no-files-found: warn
+      - name: Clean up PoC project
+        if: always()
+        run: docker compose -f compose.poc.yaml down --volumes --remove-orphans
