@@ -39,7 +39,7 @@ type Forwarder struct {
 	// and caches the connection.
 	Dial           func(addr string) (pb.CacheGatewayClient, error)
 	MaxAttempts    int           // default 12
-	Timeout        time.Duration // overall, when the caller has no earlier deadline; default 10s
+	Timeout        time.Duration // hard cap on one request; the caller's deadline applies too, earlier wins; default 10s
 	AttemptTimeout time.Duration // per forwarded call; default 3s
 	Backoff        time.Duration // pause after a full unsuccessful round; default 150ms
 	Logger         *slog.Logger
@@ -147,11 +147,9 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 		return status.Error(codes.Unavailable, "partition has no replicas")
 	}
 
-	if _, has := ctx.Deadline(); !has {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, orDefault(f.Timeout, 10*time.Second))
-		defer cancel()
-	}
+	// Timeout is a hard cap: the earlier of the caller's deadline and Timeout wins.
+	ctx, cancelAll := context.WithTimeout(ctx, orDefault(f.Timeout, 10*time.Second))
+	defer cancelAll()
 	attempts, attemptTimeout, backoff := orDefault(f.MaxAttempts, 12), orDefault(f.AttemptTimeout, 3*time.Second), orDefault(f.Backoff, 150*time.Millisecond)
 
 	var (

@@ -139,3 +139,26 @@ func TestForwarderReturnsApplicationErrorsUnchanged(t *testing.T) {
 		t.Fatalf("got %v after %d calls", err, n1.calls)
 	}
 }
+
+func TestForwarderTimeoutIsHardCapAndCallerDeadlineStillApplies(t *testing.T) {
+	down := func() *fakeNode { return &fakeNode{err: status.Error(codes.Unavailable, "down")} }
+	run := func(cap, callerDeadline time.Duration) time.Duration {
+		f := newForwarder(t, map[string]*fakeNode{"a1": down(), "a2": down(), "a3": down()})
+		f.MaxAttempts, f.Backoff, f.Timeout = 1_000_000, 5*time.Millisecond, cap
+		ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+		defer cancel()
+		start := time.Now()
+		if _, err := f.Get(ctx, &pb.GetRequest{Key: "k"}); status.Code(err) != codes.Unavailable {
+			t.Fatalf("want Unavailable, got %v", err)
+		}
+		return time.Since(start)
+	}
+	// Caller allows 30s but the gateway cap is 150ms: the cap wins.
+	if d := run(150*time.Millisecond, 30*time.Second); d < 140*time.Millisecond || d > 2*time.Second {
+		t.Fatalf("cap not honored, took %v", d)
+	}
+	// Caller deadline 100ms is earlier than the 30s cap: the caller wins.
+	if d := run(30*time.Second, 100*time.Millisecond); d < 90*time.Millisecond || d > 2*time.Second {
+		t.Fatalf("caller deadline not honored, took %v", d)
+	}
+}
