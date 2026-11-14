@@ -232,6 +232,28 @@ func TestLRUEvictsLeastRecentlyUsedKey(t *testing.T) {
 	checkInvariants(t, s)
 }
 
+func TestPeekDoesNotChangeEvictionOrder(t *testing.T) {
+	s := twoKeyStore(t)
+	v := string(bytes.Repeat([]byte("x"), 100))
+	put(t, s, "a", v, nil)
+	put(t, s, "b", v, nil)
+	if r := s.Peek("a", 0); r.Status != GetHit || r.Version.Rev != 1 {
+		t.Fatalf("peek a: %+v", r)
+	}
+	if r := s.Peek("a", 99); r.Status != GetVersionNotFound || r.LatestRev != 1 {
+		t.Fatalf("peek missing version: %+v", r)
+	}
+	if r := s.Peek("zz", 0); r.Status != GetMiss {
+		t.Fatalf("peek miss: %+v", r)
+	}
+	put(t, s, "c", v, nil)
+	// a stayed least recently written despite the peek, so it is evicted.
+	if r := s.Peek("a", 0); r.Status != GetMiss {
+		t.Fatalf("a must be evicted: %+v", r)
+	}
+	checkInvariants(t, s)
+}
+
 func TestPutCountsAsUse(t *testing.T) {
 	s := twoKeyStore(t)
 	v := string(bytes.Repeat([]byte("x"), 100))
