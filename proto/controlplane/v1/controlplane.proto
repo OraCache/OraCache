@@ -1,0 +1,129 @@
+// Control Plane API: heartbeat ingestion and configuration pull.
+//
+// Phase 1 exposes only ControlPlaneAPI. CommandDispatcher (bidirectional
+// command stream) is added in Phase 4 together with the Controller.
+//
+// Assignments are region-scoped: (region, partition_id) identifies one local
+// Raft group. The same partition has independent leaders in master and slave
+// regions; there is no global Raft leader. Gateway filters assignments for its
+// own region and uses the master-region assignment for writes.
+
+syntax = "proto3";
+
+package controlplane.v1;
+
+option go_package = "github.com/OraCache/oracache/gen/controlplane/v1;controlplanev1";
+
+import "google/protobuf/timestamp.proto";
+
+service ControlPlaneAPI {
+  // ReportHeartbeat is sent by the in-process CP Agent of a Storage Node.
+  // Heartbeat is soft state: liveness is derived from server receipt time, not
+  // from sent_at, and it never changes the configuration revision by itself.
+  rpc ReportHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // GetConfig returns an immutable configuration snapshot. The client sends
+  // the revision it already knows and keeps its last-known-good snapshot when
+  // the response carries no body.
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  string region = 2;
+  string instance = 3;
+  // Diagnostics only. Do not use it as a liveness clock.
+  google.protobuf.Timestamp sent_at = 4;
+  uint64 config_revision = 5;
+  // Full snapshot of local-region partitions, not a diff.
+  repeated PartitionStatus partitions = 6;
+  NodeResources resources = 7;
+}
+
+message HeartbeatResponse {
+  bool accepted = 1;
+  uint64 config_revision = 2;
+  uint32 next_heartbeat_after_ms = 3;
+  bool drain = 4;
+}
+
+message PartitionStatus {
+  uint32 partition_id = 1;
+  RaftRole role = 2;
+  uint64 term = 3;
+  uint64 commit_index = 4;
+  uint64 applied_index = 5;
+  string leader_id = 6;
+  bool ready = 7;
+  string last_error = 8;
+}
+
+enum RaftRole {
+  RAFT_ROLE_UNSPECIFIED = 0;
+  RAFT_ROLE_FOLLOWER = 1;
+  RAFT_ROLE_CANDIDATE = 2;
+  RAFT_ROLE_LEADER = 3;
+  RAFT_ROLE_LEARNER = 4;
+}
+
+message NodeResources {
+  uint64 cpu_millis = 1;
+  uint64 memory_bytes = 2;
+  uint64 disk_free_bytes = 3;
+}
+
+message GetConfigRequest {
+  string node_id = 1;
+  uint64 known_revision = 2;
+  AgentKind kind = 3;
+}
+
+enum AgentKind {
+  AGENT_KIND_UNSPECIFIED = 0;
+  AGENT_KIND_GATEWAY = 1;
+  AGENT_KIND_STORAGE_NODE = 2;
+}
+
+message GetConfigResponse {
+  uint64 revision = 1;
+  // Empty when revision == known_revision. The client must keep its
+  // last-known-good snapshot in that case.
+  ClusterConfig config = 2;
+}
+
+message ClusterConfig {
+  uint64 revision = 1;
+  uint32 partition_count = 2;
+  repeated Region regions = 3;
+  repeated Node nodes = 4;
+  // Unique by (region, partition_id).
+  repeated PartitionAssignment partitions = 5;
+}
+
+message Region {
+  string region_id = 1;
+  RegionRole role = 2;
+  repeated string gateway_endpoints = 3;
+}
+
+enum RegionRole {
+  REGION_ROLE_UNSPECIFIED = 0;
+  REGION_ROLE_MASTER = 1;
+  REGION_ROLE_SLAVE = 2;
+}
+
+message Node {
+  string node_id = 1;
+  string region = 2;
+  string address = 3;
+  string state = 4; // starting/ready/draining/dead
+  uint64 capacity_bytes = 5;
+  string zone = 6; // failure domain for anti-affinity
+}
+
+message PartitionAssignment {
+  uint32 partition_id = 1;
+  string region = 2;                    // assignment is region-scoped
+  string leader_node_id = 3;            // local leader in this region
+  repeated string replica_node_ids = 4; // includes the leader
+}
