@@ -40,6 +40,8 @@ type snapshot struct {
 	masterRegion   string
 	local          map[uint32]Leader
 	write          map[uint32]Leader
+	localReplicas  map[uint32][]Leader
+	writeReplicas  map[uint32][]Leader
 }
 
 // Router is a lock-free reader over an immutable routing snapshot.
@@ -103,6 +105,8 @@ func buildSnapshot(localRegion string, cfg *cpconfig.Config) (*snapshot, error) 
 		masterRegion:   masterRegion,
 		local:          make(map[uint32]Leader, cfg.PartitionCount),
 		write:          make(map[uint32]Leader, cfg.PartitionCount),
+		localReplicas:  make(map[uint32][]Leader, cfg.PartitionCount),
+		writeReplicas:  make(map[uint32][]Leader, cfg.PartitionCount),
 	}
 	for p := uint32(0); p < cfg.PartitionCount; p++ {
 		localAssignment, ok := cfg.Assignment(localRegion, p)
@@ -114,6 +118,9 @@ func buildSnapshot(localRegion string, cfg *cpconfig.Config) (*snapshot, error) 
 			return nil, err
 		}
 		s.local[p] = localLeader
+		if s.localReplicas[p], err = resolveReplicas(cfg, localAssignment); err != nil {
+			return nil, err
+		}
 
 		writeAssignment, ok := cfg.Assignment(masterRegion, p)
 		if !ok {
@@ -124,6 +131,9 @@ func buildSnapshot(localRegion string, cfg *cpconfig.Config) (*snapshot, error) 
 			return nil, err
 		}
 		s.write[p] = writeLeader
+		if s.writeReplicas[p], err = resolveReplicas(cfg, writeAssignment); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -137,6 +147,36 @@ func resolveLeader(cfg *cpconfig.Config, assignment cpconfig.PartitionAssignment
 		return Leader{}, fmt.Errorf("%w: leader %q is outside region %q", ErrNoLeader, node.ID, assignment.Region)
 	}
 	return Leader{NodeID: node.ID, Address: node.Address, Region: node.Region}, nil
+}
+
+func resolveReplicas(cfg *cpconfig.Config, assignment cpconfig.PartitionAssignment) ([]Leader, error) {
+	replicas := make([]Leader, 0, len(assignment.ReplicaNodeIDs))
+	for _, id := range assignment.ReplicaNodeIDs {
+		node, ok := cfg.NodeByID(id)
+		if !ok || node.Region != assignment.Region {
+			return nil, fmt.Errorf("%w: partition %d references unknown replica %q", ErrNoLeader, assignment.PartitionID, id)
+		}
+		replicas = append(replicas, Leader{NodeID: node.ID, Address: node.Address, Region: node.Region})
+	}
+	return replicas, nil
+}
+
+// Replicas returns every replica of a partition's group in configuration order:
+// the local region for reads, the master region for writes. Gateways use it
+// only to fail over when the assigned leader is stale or unreachable.
+func (r *Router) Replicas(partitionID uint32, write bool) ([]Leader, error) {
+	cur := r.cur.Load()
+	if cur == nil {
+		return nil, ErrNoConfig
+	}
+	if partitionID >= cur.partitionCount {
+		return nil, fmt.Errorf("%w: %d >= %d", ErrPartitionOutOfRange, partitionID, cur.partitionCount)
+	}
+	src := cur.localReplicas
+	if write {
+		src = cur.writeReplicas
+	}
+	return append([]Leader(nil), src[partitionID]...), nil
 }
 
 // Revision returns the current config revision, or 0 if no snapshot was applied.
