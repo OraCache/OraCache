@@ -198,6 +198,60 @@ etcd, Controller, Scheduler, CommandDispatcher и персистентный las
 Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
 контракт CP API, циклы агента, routing map и e2e через настоящий loopback gRPC.
 
+## Single-shard PoC (ветка integration/poc)
+
+Один регион, один шард, три отдельных процесса storage-node (статический
+состав Raft, только память), CP и forwarding-gateway. Архитектура и решения —
+[ADR](docs/architecture/ADR-poc-single-shard-integration.md).
+
+```text
+CLI → gateway (28080) → любая из 3 нод → shardraft.Instance → versioned LRU store
+                  ↘ poll GetConfig → CP ← heartbeat (реальный Raft status) ↙
+```
+
+- `cmd/storage-node` + `internal/node`: модуль внутри процесса (store + член
+  Raft-группы, gRPC → `shardraft.GatewayServer`, HTTP Raft transport,
+  CP-agent, lifecycle). Отдельного сетевого сервиса между Raft и store нет.
+- `cmd/cache-gateway` + `internal/gateway/forwarder.go`: пересылка Get/Put/
+  Delete/Batch лидеру из CP; при `NOT_LEADER` — на адрес лидера из подсказки
+  Raft, при `Unavailable` — на следующую реплику. Границы: `MaxAttempts` (12) и
+  общий дедлайн (10 с). CP не в горячем пути, назначения не переписываются.
+- Чтения по умолчанию линеаризуемые (ReadIndex через лидера).
+- **Детерминизм вытеснения:** replicated state machine читает через
+  `Store.Peek` (без продвижения в LRU), поэтому порядок LRU и вытеснение
+  определяются только реплицируемыми записями. Чтение не продлевает жизнь ключа.
+- Ревизии — глобальная возрастающая последовательность store (не плотная
+  по ключу); `expected_rev=0` — «ключа нет».
+- Checkpoint/Restore store хранит версии, seq, порядок LRU и конфигурацию
+  (только в памяти; используется Raft snapshot для отставшей реплики).
+
+```sh
+docker compose -f compose.poc.yaml up -d --build     # проект oracache-poc
+make poc-smoke                                        # CLI + убийство лидера
+# вручную:
+export ORACACHE_ENDPOINT=127.0.0.1:28080
+go build -o bin/oracache ./cmd/oracache
+bin/oracache put profile:1 hello --expected-rev 0     # PUT_STATUS_OK, rev
+bin/oracache put profile:1 again --expected-rev 0     # PUT_STATUS_CONFLICT
+bin/oracache get profile:1
+curl -s 127.0.0.1:28091/status                        # Raft status ноды 1 (28092, 28093)
+curl -s 127.0.0.1:28082/heartbeats                    # последние heartbeat в CP (soft state)
+docker compose -f compose.poc.yaml kill node-3        # убить лидера
+docker compose -f compose.poc.yaml down
+```
+
+Порты (только loopback): 28080 gateway, 28081 CP gRPC, 28082 CP diagnostics,
+28091–28093 статус нод. Тесты: `go test -race ./internal/node ./internal/gateway
+./internal/store` (в `internal/node` — кластер на реальных TCP/HTTP/gRPC с
+убийством лидера, одинаковые checkpoint реплик, snapshot отставшей реплики).
+
+Ограничения: убитую ноду **не** возвращают в группу (нет персистентности, потеря
+term/vote нарушает безопасность Raft); без TLS/аутентификации; повтор
+безусловного Put после неоднозначной ошибки может создать лишнюю версию (для
+точности используйте `expected_rev`); heartbeat в CP — soft state без
+истечения, поэтому последний heartbeat убитой ноды остаётся виден; batch не
+может пересекать партиции; мульти-регион, динамический состав и TTL вне scope.
+
 ## Go workspace и модули
 
 В корне закоммичен `go.work` (Go 1.27.3), объединяющий четыре модуля:
