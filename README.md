@@ -1,5 +1,10 @@
 # OraCache
 
+> **Целевая архитектура:** [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md).
+> Этот README описывает текущий упрощённый локальный MVP, а не целевую
+> геораспределённую систему. Отдельный target-срез Control Plane Phase 1
+> описан ниже и не меняет legacy-контракт.
+
 Локальный Go CLI и синхронный in-memory gRPC сервер по
 [`proto/cache/gateway.proto`](proto/cache/gateway.proto). Реализованы все пять
 RPC `CacheGateway`: `Get`, `Put`, `Delete`, `BatchGet`, `BatchPut`. CLI предоставляет
@@ -146,13 +151,60 @@ Go клиент и интерфейс сервера находятся в `gen/
 через `grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16 << 20))`. Этот
 транспортный лимит независим от доменных лимитов payload и размера batch.
 
+## Control Plane Phase 1 (target code)
+
+Целевой Control Plane реализован отдельно от legacy-кеша и не меняет контракт
+`proto/cache/*`:
+
+- `proto/controlplane/v1/controlplane.proto` — `ControlPlaneAPI`
+  (`ReportHeartbeat`, `GetConfig`). Assignments регион-скоупные:
+  `(region, partition_id)` — отдельная локальная Raft-группа, у master и slave
+  независимые лидеры. Конфиг версионирован (`config_revision`/`known_revision`),
+  тело передаётся только при новой revision.
+- `internal/statestore` — граница `Store`; `MemoryStore` — временная Phase 1
+  реализация без etcd (TODO и ADR-001).
+- `internal/cpapi` — stateless gRPC API: принимает heartbeat, отдаёт snapshot.
+  Heartbeat — soft state; CP API не выводит из него лидеров и не содержит
+  placement-логики.
+- `internal/cpagent` — встроенный модуль `oracache-node`, не сайдкар:
+  heartbeat раз в 5 с, config pull раз в 10 с и немедленный pull, если
+  heartbeat вернул новую revision. Ошибки CP логируются и ретраятся; Data
+  Plane продолжает работать по last-known-good.
+- `internal/gateway` — target Router/Poller: `hash(key) % P` через xxhash64,
+  локальный лидер для GET и лидер master-региона для PUT, атомарная подмена
+  routing map. Legacy `cmd/gateway`/`internal/cache` не затронуты.
+- `internal/partition` — стабильный xxhash64 и fixed partition mapping.
+- `cmd/cp-api` — plaintext gRPC сервер; `-listen`, опциональный `-config`
+  с JSON snapshot.
+
+```sh
+make build
+./bin/cp-api -listen 127.0.0.1:50052
+# опционально: ./bin/cp-api -listen 127.0.0.1:50052 -config /path/to/cp.json
+```
+
+Без `-config` CP API принимает heartbeat, но не отдаёт routing map: assignments
+публикует владелец snapshot (в Phase 1 — bootstrap-файл, позже
+Controller/Scheduler через etcd). JSON использует поля `revision`,
+`partition_count`, `regions`, `nodes`, `partitions`; роль региона —
+`master`/`slave`. Валидация требует ровно один master-регион, полный набор
+assignments для каждого объявленного региона и лидера внутри его реплик.
+
+**Ограничение Phase 1:** состояние in-memory и теряется при рестарте CP API;
+etcd, Controller, Scheduler, CommandDispatcher и персистентный last-known-good
+ещё не реализованы. Это не production-режим. Решение и миграция —
+[ADR-001](docs/architecture/ADR-001-cp-phase1-in-memory-store.md).
+
+Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
+контракт CP API, циклы агента, routing map и e2e через настоящий loopback gRPC.
+
 ## Go workspace и модули
 
 В корне закоммичен `go.work` (Go 1.27.3), объединяющий четыре модуля:
 
 | Каталог | Module path | Назначение |
 | --- | --- | --- |
-| `.` | `github.com/OraCache/oracache` | gateway и in-memory кеш |
+| `.` | `github.com/OraCache/oracache` | legacy gateway/кеш и target CP/Gateway-пакеты |
 | `gen` | `github.com/OraCache/oracache/gen` | сгенерированные protobuf/gRPC API |
 | `cmd/oracache` | `github.com/OraCache/oracache/cmd/oracache` | CLI и Kong |
 | `integration/e2e` | `github.com/OraCache/oracache/integration/e2e` | Docker/Compose и testcontainers |
@@ -160,7 +212,7 @@ Go клиент и интерфейс сервера находятся в `gen/
 У каждого модуля свои `go.mod`/`go.sum`. Testcontainers не входит в граф
 зависимостей gateway, CLI или protobuf; Kong нужен только CLI. Локальные
 `replace` связывают модули и без workspace. Из корня можно запускать
-`go run ./cmd/oracache --help` и `go run ./cmd/gateway`.
+`go run ./cmd/oracache --help`, `go run ./cmd/gateway` и `go run ./cmd/cp-api`.
 `go test ./...` из корня **не обходит вложенные модули**: используйте `make test`.
 Make запускает тесты и vet каждого модуля с `GOWORK=off`, проверяя также его
 самостоятельную разрешимость. `make build` использует workspace.
@@ -171,14 +223,14 @@ Make запускает тесты и vet каждого модуля с `GOWORK
 ## Проверки и генерация
 
 ```sh
-make build                # bin/gateway и bin/oracache
-make test                 # gateway + protobuf + CLI, -race, без Docker
-make test-gateway         # только корневой модуль
+make build                # bin/gateway, bin/oracache и bin/cp-api
+make test                 # root (legacy gateway + CP Phase 1) + protobuf + CLI, -race
+make test-gateway         # только корневой модуль (legacy gateway + CP Phase 1)
 make test-protobuf        # компиляция API; сейчас нет test cases
 make test-cli             # CLI, включая настоящий localhost gRPC
 make vet                  # три обычных модуля, без Docker
 make test-e2e             # отдельный модуль, нужен Docker daemon
-make generate             # или make gen; генерация в gen/gateway/v1
+make generate             # или make gen; gen/gateway/v1 и gen/controlplane/v1
 make docker-build         # только сборка Docker образа
 make up                   # пересобрать и запустить Compose
 make down                 # остановить Compose
@@ -221,7 +273,7 @@ CONFLICT, явный ноль и отсутствие expected_rev, смешан
 зарегистрирован до запуска и ограничен таймаутом. Отсутствие
 Docker — ошибка явного e2e запуска, не skip. Обычные тесты Docker не требуют.
 
-Генерация поддерживает Linux x86_64, требует `curl`, `unzip`, `sha256sum`, Go и
+Генерация поддерживает Linux x86_64 и macOS (arm64/x86_64), требует `curl`, `unzip`, `sha256sum`, Go и
 доступ к GitHub/Go modules. Makefile использует закреплённые версии:
 `protoc 27.2` (архив проверяется SHA-256), `protoc-gen-go v1.34.2`,
 `protoc-gen-go-grpc v1.4.0`. Инструменты ставятся только в `.tools/`, системный Go

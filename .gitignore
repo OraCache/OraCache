@@ -3,3 +3,10 @@
 /go.work.sum
 /.reports/
 /tools/__pycache__/
+/output.txt
+
+# Local IDE / AI / developer tooling; not part of the project code
+/.idea/
+/.dsh/
+/AGENTS.md
+/scripts/collect.sh

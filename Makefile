@@ -14,6 +14,7 @@ $(GOTESTSUM):
 build:
 	go build -o bin/oracache ./cmd/oracache
 	go build -o bin/gateway ./cmd/gateway
+	go build -o bin/cp-api ./cmd/cp-api
 
 # Clear every expected report before even installing tools: an aborted run must
 # never publish an older module's results. Individual targets do the same.
@@ -41,14 +42,28 @@ vet:
 		(cd $$module && GOWORK=off go vet ./...); \
 	done
 
-# Reproducible Linux x86_64 generators, installed only under .tools/.
+# Reproducible generators, installed only under .tools/. The same protoc
+# version is used on Linux CI and local macOS checkouts.
 PROTOC_VERSION := 27.2
-PROTOC_ARCHIVE := .tools/protoc-$(PROTOC_VERSION)-linux-x86_64.zip
-PROTOC_SHA256 := 4a95e0ea2e51720af86a92f48d4997c8756923a9d0c58fd8a850657cd7479caf
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_S),Darwin)
+  ifeq ($(UNAME_M),arm64)
+    PROTOC_PLATFORM := osx-aarch_64
+    PROTOC_SHA256 := 877de17b5d2662b96e68a6e208cb1851437ab3e2b419c2ef5b7b873ffac5357d
+  else
+    PROTOC_PLATFORM := osx-x86_64
+    PROTOC_SHA256 := abc25a236571612d45eb4b6b6e6abe3ac9aecc34b195f76f248786844f5619c7
+  endif
+else
+  PROTOC_PLATFORM := linux-x86_64
+  PROTOC_SHA256 := 4a95e0ea2e51720af86a92f48d4997c8756923a9d0c58fd8a850657cd7479caf
+endif
+PROTOC_ARCHIVE := .tools/protoc-$(PROTOC_VERSION)-$(PROTOC_PLATFORM).zip
 
-.tools/protoc-$(PROTOC_VERSION)-linux-x86_64.zip:
+$(PROTOC_ARCHIVE):
 	mkdir -p .tools
-	curl -fL --retry 2 https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOC_VERSION)/protoc-$(PROTOC_VERSION)-linux-x86_64.zip -o $@
+	curl -fL --retry 2 https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOC_VERSION)/protoc-$(PROTOC_VERSION)-$(PROTOC_PLATFORM).zip -o $@
 
 gen: generate
 
@@ -60,7 +75,8 @@ generate: $(PROTOC_ARCHIVE)
 	GOTOOLCHAIN=go1.27.3 GOBIN="$(CURDIR)/.tools/bin" go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.4.0
 	PATH="$(CURDIR)/.tools/bin:$$PATH" .tools/protoc/bin/protoc -I proto -I .tools/protoc/include \
 		--go_out=. --go_opt=module=github.com/OraCache/oracache \
-		--go-grpc_out=. --go-grpc_opt=module=github.com/OraCache/oracache proto/cache/gateway.proto
+		--go-grpc_out=. --go-grpc_opt=module=github.com/OraCache/oracache \
+		proto/cache/gateway.proto proto/controlplane/v1/controlplane.proto
 
 test-e2e:
 	mkdir -p $(REPORTS)
