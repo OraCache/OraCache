@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/partition"
@@ -29,12 +30,14 @@ var (
 // Leader is a resolved local Raft leader. Region is included for diagnostics
 // and must equal the region whose assignment produced the route.
 type Leader struct {
-	NodeID  string
-	Address string
-	Region  string
+	NodeID    string
+	Address   string
+	Region    string
+	ExpiresAt time.Time // zero in legacy static mode
 }
 
 type snapshot struct {
+	discovery      bool
 	revision       uint64
 	partitionCount uint32
 	masterRegion   string
@@ -82,6 +85,9 @@ func (r *Router) Apply(cfg *cpconfig.Config) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	old := r.cur.Load()
+	if old != nil && old.discovery {
+		return fmt.Errorf("gateway: cannot downgrade discovery to static routing")
+	}
 	if old != nil {
 		if cfg.Revision <= old.revision {
 			return fmt.Errorf("%w: have %d, got %d", ErrStaleRevision, old.revision, cfg.Revision)
@@ -176,7 +182,16 @@ func (r *Router) Replicas(partitionID uint32, write bool) ([]Leader, error) {
 	if write {
 		src = cur.writeReplicas
 	}
-	return append([]Leader(nil), src[partitionID]...), nil
+	out := make([]Leader, 0, len(src[partitionID]))
+	for _, l := range src[partitionID] {
+		if live(l) {
+			out = append(out, l)
+		}
+	}
+	if cur.discovery && len(out) == 0 {
+		return nil, ErrNoLeader
+	}
+	return out, nil
 }
 
 // Revision returns the current config revision, or 0 if no snapshot was applied.
@@ -220,7 +235,7 @@ func (r *Router) GetLeader(partitionID uint32) (Leader, error) {
 	if cur == nil {
 		return Leader{}, ErrNoConfig
 	}
-	return routeFor(cur.local, partitionID, cur.partitionCount)
+	return snapshotLeader(cur, partitionID, false)
 }
 
 // GetLeaderForKey hashes the key and resolves the local-region GET leader.
@@ -229,7 +244,7 @@ func (r *Router) GetLeaderForKey(key string) (Leader, error) {
 	if cur == nil {
 		return Leader{}, ErrNoConfig
 	}
-	return routeFor(cur.local, partition.Of(key, cur.partitionCount), cur.partitionCount)
+	return snapshotLeader(cur, partition.Of(key, cur.partitionCount), false)
 }
 
 // WriteLeader resolves the master-region leader for a partition. In a slave
@@ -239,7 +254,7 @@ func (r *Router) WriteLeader(partitionID uint32) (Leader, error) {
 	if cur == nil {
 		return Leader{}, ErrNoConfig
 	}
-	return routeFor(cur.write, partitionID, cur.partitionCount)
+	return snapshotLeader(cur, partitionID, true)
 }
 
 // WriteLeaderForKey hashes the key and resolves the master-region PUT leader.
@@ -248,7 +263,7 @@ func (r *Router) WriteLeaderForKey(key string) (Leader, error) {
 	if cur == nil {
 		return Leader{}, ErrNoConfig
 	}
-	return routeFor(cur.write, partition.Of(key, cur.partitionCount), cur.partitionCount)
+	return snapshotLeader(cur, partition.Of(key, cur.partitionCount), true)
 }
 
 func routeFor(routes map[uint32]Leader, partitionID, partitionCount uint32) (Leader, error) {

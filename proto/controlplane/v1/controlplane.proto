@@ -38,6 +38,9 @@ message HeartbeatRequest {
   // Full snapshot of local-region partitions, not a diff.
   repeated PartitionStatus partitions = 6;
   NodeResources resources = 7;
+  // PoC discovery only: per-process monotonic sequence and gateway address.
+  string client_address = 8;
+  uint64 sequence = 9;
 }
 
 message HeartbeatResponse {
@@ -56,6 +59,8 @@ message PartitionStatus {
   string leader_id = 6;
   bool ready = 7;
   string last_error = 8;
+  string group_id = 9;
+  bool draining = 10;
 }
 
 enum RaftRole {
@@ -89,6 +94,20 @@ message GetConfigResponse {
   // Empty when revision == known_revision. The client must keep its
   // last-known-good snapshot in that case.
   ClusterConfig config = 2;
+  // Opt-in PoC discovery: full snapshot on every pull, including empty catalog.
+  DiscoverySnapshot discovery = 3;
+}
+
+message DiscoverySnapshot {
+  string region = 1;
+  string group_id = 2;
+  repeated DiscoveryObservation observations = 3;
+}
+
+message DiscoveryObservation {
+  HeartbeatRequest heartbeat = 1;
+  // CP receiver TTL remaining at snapshot creation; rounded down.
+  uint64 remaining_ms = 2;
 }
 
 message ClusterConfig {

@@ -69,6 +69,7 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	rpcCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	started := time.Now()
 	known := p.Router.Revision()
 	resp, err := p.Client.GetConfig(rpcCtx, &controlplanev1.GetConfigRequest{
 		NodeId:        p.NodeID,
@@ -80,6 +81,12 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	}
 	if resp == nil {
 		return errors.New("oracache/gateway: empty config response")
+	}
+	if resp.GetDiscovery() != nil {
+		return p.Router.ApplyDiscovery(resp.GetDiscovery(), resp.GetRevision(), started)
+	}
+	if p.Router.discovered() {
+		return errors.New("gateway: discovery response missing; refusing static downgrade")
 	}
 	if resp.GetRevision() < known {
 		return fmt.Errorf("oracache/gateway: CP revision went backwards: known %d, got %d", known, resp.GetRevision())

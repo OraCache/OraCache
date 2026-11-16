@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	"github.com/OraCache/oracache/internal/cpapi"
@@ -22,15 +23,20 @@ import (
 	"google.golang.org/grpc"
 )
 
-func newServer(store statestore.Store, logger *slog.Logger) *grpc.Server {
+func newServer(store statestore.Store, logger *slog.Logger, opts ...cpapi.Option) *grpc.Server {
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
-	controlplanev1.RegisterControlPlaneAPIServer(server, cpapi.New(store, cpapi.WithLogger(logger)))
+	opts = append(opts, cpapi.WithLogger(logger))
+	controlplanev1.RegisterControlPlaneAPIServer(server, cpapi.New(store, opts...))
 	return server
 }
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:50052", "plaintext gRPC listen address (use port 0 for an ephemeral port)")
 	configPath := flag.String("config", "", "optional JSON config snapshot loaded into the in-memory store")
+	discoveryRegion := flag.String("discovery-region", "", "opt-in discovery region; requires --discovery-group")
+	discoveryGroup := flag.String("discovery-group", "", "static Raft group identity, not membership")
+	discoveryTTL := flag.Duration("discovery-ttl", 20*time.Second, "receiver-side discovery lease")
+	heartbeat := flag.Duration("heartbeat-interval", 5*time.Second, "heartbeat interval advertised in discovery mode")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
@@ -38,6 +44,11 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	opts, _, err := discoveryOptions(*discoveryRegion, *discoveryGroup, *configPath, *discoveryTTL, *heartbeat)
+	if err != nil {
+		logger.Error("discovery settings", "error", err)
+		os.Exit(2)
+	}
 	store := statestore.NewMemory()
 	revision := uint64(0)
 	if *configPath != "" {
@@ -58,7 +69,7 @@ func main() {
 		logger.Error("listen", "address", *listen, "error", err)
 		os.Exit(1)
 	}
-	server := newServer(store, logger)
+	server := newServer(store, logger, opts...)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)

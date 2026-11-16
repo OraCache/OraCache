@@ -15,6 +15,7 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/discovery"
 	"github.com/OraCache/oracache/internal/statestore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -41,6 +42,9 @@ func (systemClock) Now() time.Time { return time.Now() }
 
 // Option customizes a Server.
 type Option func(*Server)
+
+// WithDiscovery enables the isolated PoC observation catalog, not placement.
+func WithDiscovery(c *discovery.Catalog) Option { return func(s *Server) { s.discovery = c } }
 
 // WithClock replaces the wall clock.
 func WithClock(clock Clock) Option {
@@ -78,6 +82,7 @@ type Server struct {
 	clock             Clock
 	log               *slog.Logger
 	heartbeatInterval time.Duration
+	discovery         *discovery.Catalog
 }
 
 // New returns a CP API server. The store must not be nil.
@@ -102,6 +107,12 @@ func New(store statestore.Store, opts ...Option) *Server {
 func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.HeartbeatRequest) (*controlplanev1.HeartbeatResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "heartbeat request is required")
+	}
+	if s.discovery != nil {
+		if err := s.discovery.Report(req, s.clock.Now()); err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return &controlplanev1.HeartbeatResponse{Accepted: true, NextHeartbeatAfterMs: uint32(s.heartbeatInterval / time.Millisecond)}, nil
 	}
 	if err := validateID("node_id", req.GetNodeId()); err != nil {
 		return nil, err
@@ -200,6 +211,10 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 		return nil, status.Error(codes.InvalidArgument, "kind must be GATEWAY or STORAGE_NODE")
 	}
 
+	if s.discovery != nil {
+		snapshot, revision := s.discovery.Snapshot(s.clock.Now())
+		return &controlplanev1.GetConfigResponse{Revision: revision, Discovery: snapshot}, nil
+	}
 	snapshot, err := s.store.Config(ctx)
 	if err != nil {
 		s.log.ErrorContext(ctx, "store config failed", "node_id", req.GetNodeId(), "error", err)
