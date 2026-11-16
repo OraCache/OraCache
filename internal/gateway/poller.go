@@ -69,7 +69,6 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	rpcCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	started := time.Now()
 	known := p.Router.Revision()
 	resp, err := p.Client.GetConfig(rpcCtx, &controlplanev1.GetConfigRequest{
 		NodeId:        p.NodeID,
@@ -82,17 +81,11 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	if resp == nil {
 		return errors.New("oracache/gateway: empty config response")
 	}
-	if resp.GetDiscovery() != nil {
-		return p.Router.ApplyDiscovery(resp.GetDiscovery(), resp.GetRevision(), started)
-	}
-	if p.Router.discovered() {
-		return errors.New("gateway: discovery response missing; refusing static downgrade")
-	}
 	if resp.GetRevision() < known {
 		return fmt.Errorf("oracache/gateway: CP revision went backwards: known %d, got %d", known, resp.GetRevision())
 	}
 	if resp.GetRevision() == known {
-		return nil
+		return p.Router.ApplyLeaderHints(resp.GetLeaderHints())
 	}
 	if resp.GetConfig() == nil {
 		return errors.New("oracache/gateway: CP returned a new revision without a config")
@@ -105,8 +98,8 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("oracache/gateway: invalid config: %w", err)
 	}
-	if err := p.Router.Apply(cfg); err != nil {
-		return fmt.Errorf("oracache/gateway: apply config: %w", err)
+	if err := p.Router.applyConfig(cfg, resp.GetLeaderHints()); err != nil {
+		return fmt.Errorf("oracache/gateway: apply config and hints: %w", err)
 	}
 	p.logger().Info("gateway routing map updated",
 		"node_id", p.NodeID,

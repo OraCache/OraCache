@@ -38,9 +38,8 @@ message HeartbeatRequest {
   // Full snapshot of local-region partitions, not a diff.
   repeated PartitionStatus partitions = 6;
   NodeResources resources = 7;
-  // PoC discovery only: per-process monotonic sequence and gateway address.
-  string client_address = 8;
-  uint64 sequence = 9;
+  reserved 8, 9;
+  reserved "client_address", "sequence";
 }
 
 message HeartbeatResponse {
@@ -59,8 +58,8 @@ message PartitionStatus {
   string leader_id = 6;
   bool ready = 7;
   string last_error = 8;
-  string group_id = 9;
-  bool draining = 10;
+  reserved 9, 10;
+  reserved "group_id", "draining";
 }
 
 enum RaftRole {
@@ -94,20 +93,23 @@ message GetConfigResponse {
   // Empty when revision == known_revision. The client must keep its
   // last-known-good snapshot in that case.
   ClusterConfig config = 2;
-  // Opt-in PoC discovery: full snapshot on every pull, including empty catalog.
-  DiscoverySnapshot discovery = 3;
+  // Removed leased discovery. Do not reuse its wire number or name.
+  reserved 3;
+  reserved "discovery";
+  // Advisory observations, sent even when config revision is unchanged.
+  // Missing hints do not clear client term high-water marks.
+  repeated LeaderHint leader_hints = 4;
 }
 
-message DiscoverySnapshot {
+// No address or lease: resolve node_id only within the configured regional
+// assignment. Raft, not this observation, authorizes serving requests.
+message LeaderHint {
   string region = 1;
-  string group_id = 2;
-  repeated DiscoveryObservation observations = 3;
-}
-
-message DiscoveryObservation {
-  HeartbeatRequest heartbeat = 1;
-  // CP receiver TTL remaining at snapshot creation; rounded down.
-  uint64 remaining_ms = 2;
+  uint32 partition_id = 2;
+  // Empty means conflicting self-reports at term. Conflict is sticky until a
+  // higher term; clients fall back to static replicas, retaining this term.
+  string node_id = 3;
+  uint64 term = 4;
 }
 
 message ClusterConfig {

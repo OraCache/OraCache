@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
-	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -74,10 +73,9 @@ func (t realTimer) Stop() bool          { return t.timer.Stop() }
 
 // Options configures an Agent. NodeID, Region, Client and Statuses are required.
 type Options struct {
-	NodeID        string
-	Region        string
-	Instance      string
-	ClientAddress string // advertised gateway endpoint for PoC discovery
+	NodeID   string
+	Region   string
+	Instance string
 
 	Client   controlplanev1.ControlPlaneAPIClient
 	Statuses StatusProvider
@@ -97,11 +95,9 @@ type Options struct {
 
 // Agent is the in-process CP Agent. It must not be copied after first use.
 type Agent struct {
-	nodeID        string
-	region        string
-	instance      string
-	clientAddress string
-	sequence      atomic.Uint64
+	nodeID   string
+	region   string
+	instance string
 
 	client   controlplanev1.ControlPlaneAPIClient
 	statuses StatusProvider
@@ -163,7 +159,6 @@ func New(opts Options) (*Agent, error) {
 		nodeID:             opts.NodeID,
 		region:             opts.Region,
 		instance:           opts.Instance,
-		clientAddress:      opts.ClientAddress,
 		client:             opts.Client,
 		statuses:           opts.Statuses,
 		holder:             opts.Holder,
@@ -275,8 +270,6 @@ func (a *Agent) sendHeartbeat(ctx context.Context) (time.Duration, error) {
 		SentAt:         timestamppb.New(a.clock.Now().UTC()),
 		ConfigRevision: revision,
 		Partitions:     statuses,
-		ClientAddress:  a.clientAddress,
-		Sequence:       a.sequence.Add(1),
 	}
 	rpcCtx, cancel := context.WithTimeout(ctx, a.rpcTimeout)
 	defer cancel()
@@ -316,10 +309,6 @@ func (a *Agent) pullConfig(ctx context.Context) error {
 	}
 	if resp == nil {
 		return errors.New("get config: empty response")
-	}
-	// Discovery is routing observation only, never a storage membership command.
-	if resp.GetDiscovery() != nil {
-		return nil
 	}
 	if resp.GetRevision() < known {
 		return fmt.Errorf("get config: revision went backwards from %d to %d", known, resp.GetRevision())

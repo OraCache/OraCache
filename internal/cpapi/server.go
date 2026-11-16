@@ -11,11 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	"github.com/OraCache/oracache/internal/cpconfig"
-	"github.com/OraCache/oracache/internal/discovery"
+	"github.com/OraCache/oracache/internal/leaderhint"
 	"github.com/OraCache/oracache/internal/statestore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -42,9 +43,6 @@ func (systemClock) Now() time.Time { return time.Now() }
 
 // Option customizes a Server.
 type Option func(*Server)
-
-// WithDiscovery enables the isolated PoC observation catalog, not placement.
-func WithDiscovery(c *discovery.Catalog) Option { return func(s *Server) { s.discovery = c } }
 
 // WithClock replaces the wall clock.
 func WithClock(clock Clock) Option {
@@ -82,7 +80,8 @@ type Server struct {
 	clock             Clock
 	log               *slog.Logger
 	heartbeatInterval time.Duration
-	discovery         *discovery.Catalog
+	hintsMu           sync.Mutex
+	hints             map[leaderhint.Key]leaderhint.Observation
 }
 
 // New returns a CP API server. The store must not be nil.
@@ -107,12 +106,6 @@ func New(store statestore.Store, opts ...Option) *Server {
 func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.HeartbeatRequest) (*controlplanev1.HeartbeatResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "heartbeat request is required")
-	}
-	if s.discovery != nil {
-		if err := s.discovery.Report(req, s.clock.Now()); err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		}
-		return &controlplanev1.HeartbeatResponse{Accepted: true, NextHeartbeatAfterMs: uint32(s.heartbeatInterval / time.Millisecond)}, nil
 	}
 	if err := validateID("node_id", req.GetNodeId()); err != nil {
 		return nil, err
@@ -189,6 +182,7 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 		"config_revision", revision,
 		"partitions", len(heartbeat.Partitions),
 	)
+	s.observeLeaders(ctx, req)
 	return &controlplanev1.HeartbeatResponse{
 		Accepted:             true,
 		ConfigRevision:       revision,
@@ -211,10 +205,6 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 		return nil, status.Error(codes.InvalidArgument, "kind must be GATEWAY or STORAGE_NODE")
 	}
 
-	if s.discovery != nil {
-		snapshot, revision := s.discovery.Snapshot(s.clock.Now())
-		return &controlplanev1.GetConfigResponse{Revision: revision, Discovery: snapshot}, nil
-	}
 	snapshot, err := s.store.Config(ctx)
 	if err != nil {
 		s.log.ErrorContext(ctx, "store config failed", "node_id", req.GetNodeId(), "error", err)
@@ -224,7 +214,7 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 		return nil, status.Errorf(codes.FailedPrecondition, "known revision %d is ahead of CP revision %d", req.GetKnownRevision(), snapshot.Revision)
 	}
 	if req.GetKnownRevision() == snapshot.Revision {
-		return &controlplanev1.GetConfigResponse{Revision: snapshot.Revision}, nil
+		return &controlplanev1.GetConfigResponse{Revision: snapshot.Revision, LeaderHints: s.leaderHints(snapshot.Config)}, nil
 	}
 	if snapshot.Config == nil {
 		s.log.ErrorContext(ctx, "config snapshot is missing", "node_id", req.GetNodeId(), "revision", snapshot.Revision)
@@ -239,8 +229,9 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 		return nil, status.Error(codes.Internal, "config snapshot is inconsistent")
 	}
 	response := &controlplanev1.GetConfigResponse{
-		Revision: snapshot.Revision,
-		Config:   snapshot.Config.ToProto(),
+		Revision:    snapshot.Revision,
+		Config:      snapshot.Config.ToProto(),
+		LeaderHints: s.leaderHints(snapshot.Config),
 	}
 	s.log.DebugContext(ctx, "config served",
 		"node_id", req.GetNodeId(),
