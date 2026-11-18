@@ -22,9 +22,8 @@ service ControlPlaneAPI {
   // а не sent_at, и сам по себе не меняет revision конфигурации.
   rpc ReportHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 
-  // GetConfig возвращает snapshot конфигурации. Gateway получает live-view
-  // состава кластера даже при совпадении revision; Storage Node при совпадении
-  // revision получает только revision и сохраняет last-known-good.
+  // GetConfig возвращает конфигурацию и, для Gateway, наблюдаемое состояние
+  // назначенных реплик. Наблюдения могут меняться при той же revision.
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
 }
 
@@ -86,8 +85,10 @@ enum AgentKind {
 
 message GetConfigResponse {
   uint64 revision = 1;
-  // Может быть пустым при совпадении revision для Storage Node. Gateway
-  // получает live-view и при совпадении revision.
+  // При совпадении revision Storage Node получает ответ без config.
+  // Gateway при той же revision получает live-view, кроме периода запуска
+  // CP: пока собираются первые heartbeat, сервер может вернуть только
+  // revision. В этом случае Gateway сохраняет последнюю карту.
   ClusterConfig config = 2;
 }
 
@@ -128,7 +129,7 @@ message PartitionAssignment {
   repeated string replica_node_ids = 4; // включает лидера
 
   // Поля live-view. В статическом snapshot могут быть false.
-  bool ready = 5;                       // лидер партиции готов
+  bool ready = 5;                       // назначенная реплика сообщает, что она готовый лидер
   bool readable = 6;                    // партицию можно читать по strict-пути
   bool writable = 7;                    // партицию можно писать (только master-регион)
 }

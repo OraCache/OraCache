@@ -587,8 +587,10 @@ type GetConfigResponse struct {
 	unknownFields protoimpl.UnknownFields
 
 	Revision uint64 `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
-	// Может быть пустым при совпадении revision для Storage Node. Gateway
-	// получает live-view и при совпадении revision.
+	// При совпадении revision Storage Node получает ответ без config.
+	// Gateway при той же revision получает live-view, кроме периода запуска
+	// CP: пока собираются первые heartbeat, сервер может вернуть только
+	// revision. В этом случае Gateway сохраняет последнюю карту.
 	Config *ClusterConfig `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
 }
 
@@ -878,7 +880,7 @@ type PartitionAssignment struct {
 	LeaderNodeId   string   `protobuf:"bytes,3,opt,name=leader_node_id,json=leaderNodeId,proto3" json:"leader_node_id,omitempty"`       // локальный лидер; в live-view — по последним heartbeat
 	ReplicaNodeIds []string `protobuf:"bytes,4,rep,name=replica_node_ids,json=replicaNodeIds,proto3" json:"replica_node_ids,omitempty"` // включает лидера
 	// Поля live-view. В статическом snapshot могут быть false.
-	Ready    bool `protobuf:"varint,5,opt,name=ready,proto3" json:"ready,omitempty"`       // лидер партиции готов
+	Ready    bool `protobuf:"varint,5,opt,name=ready,proto3" json:"ready,omitempty"`       // назначенная реплика сообщает, что она готовый лидер
 	Readable bool `protobuf:"varint,6,opt,name=readable,proto3" json:"readable,omitempty"` // партицию можно читать по strict-пути
 	Writable bool `protobuf:"varint,7,opt,name=writable,proto3" json:"writable,omitempty"` // партицию можно писать (только master-регион)
 }

@@ -41,9 +41,8 @@ type ControlPlaneAPIClient interface {
 	// Heartbeat — soft state: liveness определяется временем получения на сервере,
 	// а не sent_at, и сам по себе не меняет revision конфигурации.
 	ReportHeartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
-	// GetConfig возвращает snapshot конфигурации. Gateway получает live-view
-	// состава кластера даже при совпадении revision; Storage Node при совпадении
-	// revision получает только revision и сохраняет last-known-good.
+	// GetConfig возвращает конфигурацию и, для Gateway, наблюдаемое состояние
+	// назначенных реплик. Наблюдения могут меняться при той же revision.
 	GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
 }
 
@@ -83,9 +82,8 @@ type ControlPlaneAPIServer interface {
 	// Heartbeat — soft state: liveness определяется временем получения на сервере,
 	// а не sent_at, и сам по себе не меняет revision конфигурации.
 	ReportHeartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
-	// GetConfig возвращает snapshot конфигурации. Gateway получает live-view
-	// состава кластера даже при совпадении revision; Storage Node при совпадении
-	// revision получает только revision и сохраняет last-known-good.
+	// GetConfig возвращает конфигурацию и, для Gateway, наблюдаемое состояние
+	// назначенных реплик. Наблюдения могут меняться при той же revision.
 	GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
 	mustEmbedUnimplementedControlPlaneAPIServer()
 }

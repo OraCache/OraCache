@@ -14,6 +14,7 @@ $(GOTESTSUM):
 build:
 	go build -o bin/oracache ./cmd/oracache
 	go build -o bin/gateway ./cmd/gateway
+	go build -o bin/storage-node ./cmd/storage-node
 	go build -o bin/cp-api ./cmd/cp-api
 	go build -o bin/oracache-node ./cmd/oracache-node
 	go build -o bin/api-gateway ./cmd/api-gateway
