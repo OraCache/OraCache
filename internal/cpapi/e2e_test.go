@@ -33,34 +33,10 @@ func TestPhase1HeartbeatAndConfigPull(t *testing.T) {
 	if err := store.ApplyConfig(ctx, cpconfigtest.Config(1)); err != nil {
 		t.Fatalf("ApplyConfig(1): %v", err)
 	}
-	clock := &mutableClock{now: time.Now().UTC()}
+	clock := &mutableClock{now: time.Unix(1000, 0).UTC()}
 	srv := cpapi.New(store, cpapi.WithHeartbeatInterval(25*time.Millisecond), cpapi.WithClock(clock))
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	grpcServer := grpc.NewServer()
-	controlplanev1.RegisterControlPlaneAPIServer(grpcServer, srv)
-	go func() {
-		if err := grpcServer.Serve(listener); err != nil {
-			t.Logf("grpc server stopped: %v", err)
-		}
-	}()
-	t.Cleanup(func() {
-		grpcServer.Stop()
-		_ = listener.Close()
-	})
-
-	conn, err := grpc.DialContext(ctx, listener.Addr().String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-	)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	client := controlplanev1.NewControlPlaneAPIClient(conn)
+	client := startCPAPIClient(t, ctx, srv)
 
 	holder := cpconfig.NewHolder()
 	agent, err := cpagent.New(cpagent.Options{
@@ -144,16 +120,57 @@ func TestPhase1HeartbeatAndConfigPull(t *testing.T) {
 		t.Fatalf("live leader = %+v, want eu-1", leader)
 	}
 
-	// Останавливаем агент и переводим часы CP за TTL: gateway должен получить
-	// live-view, в котором нода мертва, и перестать маршрутизировать.
+	// CP restarts with the same bootstrap config and no heartbeat history.
 	stopAgentNow()
-	clock.Advance(time.Minute)
+	restartedStore := statestore.NewMemory()
+	if err := restartedStore.ApplyConfig(ctx, cpconfigtest.Config(2)); err != nil {
+		t.Fatal(err)
+	}
+	poller.Client = startCPAPIClient(t, ctx, cpapi.New(restartedStore, cpapi.WithClock(clock)))
+	if err := poller.Refresh(ctx); err != nil {
+		t.Fatalf("gateway Refresh after CP restart: %v", err)
+	}
+	if got, err := router.GetLeader(0); err != nil || got.NodeID != leader.NodeID {
+		t.Fatalf("route during CP restart = %+v, %v, want retained leader %q", got, err, leader.NodeID)
+	}
+
+	// When the startup window ends, a missing heartbeat must remove the route.
+	clock.Advance(cpapi.DefaultNodeTTL)
 	if err := poller.Refresh(ctx); err != nil {
 		t.Fatalf("gateway Refresh(expired): %v", err)
 	}
 	if _, err := router.GetLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
 		t.Fatalf("GetLeader after TTL error = %v, want ErrNoLeader", err)
 	}
+}
+
+func startCPAPIClient(t *testing.T, ctx context.Context, srv *cpapi.Server) controlplanev1.ControlPlaneAPIClient {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	controlplanev1.RegisterControlPlaneAPIServer(grpcServer, srv)
+	go func() {
+		if err := grpcServer.Serve(listener); err != nil {
+			t.Logf("grpc server stopped: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	conn, err := grpc.DialContext(ctx, listener.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return controlplanev1.NewControlPlaneAPIClient(conn)
 }
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {

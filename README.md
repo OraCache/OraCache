@@ -219,16 +219,17 @@ Go клиент и интерфейс сервера находятся в `gen/
   (`ReportHeartbeat`, `GetConfig`). Assignments регион-скоупные:
   `(region, partition_id)` — отдельная локальная Raft-группа, у master и slave
   независимые лидеры. Конфиг версионирован (`config_revision`/`known_revision`):
-  Storage Node получает тело только при новой revision, Gateway — актуальный
-  live-view состава кластера на каждый poll. В live-view assignment содержит
+  Storage Node получает тело только при новой revision. Gateway получает
+  live-view и при прежней revision. В live-view assignment содержит
   `ready/readable/writable` по текущему лидеру: write — только master-регион
   с готовым лидером, read — готовый лидер для strict-чтения.
 - `internal/statestore` — граница `Store`; `MemoryStore` — временная Phase 1
   реализация без etcd (TODO и ADR-001). `LiveConfig` строит live-view с TTL.
 - `internal/cpapi` — stateless gRPC API: принимает heartbeat, отдаёт snapshot
-  и live-view. Heartbeat — soft state; liveness считается по TTL, лидеры для
-  Gateway выбираются по последним heartbeat. Placement по-прежнему не входит
-  в CP API.
+  и live-view. Liveness считается по TTL. При выборе маршрута учитываются
+  только свежие отчёты назначенных реплик о собственном лидерстве. Если
+  две реплики заявляют лидерство в одном максимальном term, партиция
+  считается неготовой. Placement задаётся статической конфигурацией.
 - `internal/cpagent` — встроенный модуль `oracache-node`, не сайдкар:
   heartbeat раз в 5 с, config pull раз в 10 с и немедленный pull, если
   heartbeat вернул новую revision. Ошибки CP логируются и ретраятся; Data
@@ -308,18 +309,20 @@ curl localhost:9464/metrics | grep oracache_cp_
 Флаг `-heartbeat-interval` фиксирует интервал и имеет приоритет над
 подсказкой CP API; без него агент следует подсказке (по умолчанию 5 с).
 
-**Ограничение Phase 1:** состояние in-memory и теряется при рестарте CP API;
-live-view тоже process-local и строится по heartbeat с TTL 15 с. После рестарта
-CP API ноды снова становятся live только после ближайших heartbeat. etcd,
-Controller, Scheduler, CommandDispatcher и персистентный last-known-good ещё
-не реализованы. Настоящие target Gateway и Storage Node тоже ещё не подняты:
-есть CP API, CP Agent и Gateway Router/Poller как библиотеки. Это не
-production-режим. Решение и миграция —
-[ADR-001](docs/architecture/ADR-001-cp-phase1-in-memory-store.md).
+**Рестарт CP API.** Пока сервер собирает первые heartbeat от назначенных
+реплик, Gateway с той же ревизией сохраняет последнюю карту. Это окно
+закрывается после получения heartbeat от всех назначенных реплик вне drain
+или по истечении `-node-ttl` с запуска CP (по умолчанию 15 с). Gateway без карты
+или с более старой ревизией сразу получает доступный live-view.
+
+В Phase 1 heartbeat и карта хранятся в памяти. `oracache-node` на стенде
+публикует заданные флагами статусы, а `api-gateway` показывает маршруты через
+`/routes`. Постоянное хранилище состояния CP и интеграция с реальными Raft
+группами относятся к следующим этапам.
 
 Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
-контракт CP API, TTL/liveness, dead-node и per-partition routing, циклы агента,
-routing map и e2e через настоящий loopback gRPC.
+контракт CP API, TTL/liveness, выбор лидера среди назначенных реплик, циклы
+агента и сохранение маршрута при рестарте CP через loopback gRPC.
 
 ## Go workspace и модули
 

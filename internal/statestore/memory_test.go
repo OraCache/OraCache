@@ -358,6 +358,56 @@ func TestLiveConfigProjectsLeaderFromHeartbeat(t *testing.T) {
 	}
 }
 
+func TestLiveConfigChoosesLeaderAmongAssignedReplicas(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		nodeID     string
+		term       uint64
+		wantLeader string
+		wantReady  bool
+	}{
+		{name: "higher term from an unassigned node", nodeID: "eu-3", term: 3, wantLeader: "eu-2", wantReady: true},
+		{name: "lower term from an assigned replica", nodeID: "eu-1", term: 1, wantLeader: "eu-2", wantReady: true},
+		{name: "higher term from an assigned replica", nodeID: "eu-1", term: 3, wantLeader: "eu-1", wantReady: true},
+		{name: "conflicting leaders in the same term", nodeID: "eu-1", term: 2, wantLeader: "eu-1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := statestore.NewMemory()
+			cfg := cpconfigtest.Config(1)
+			cfg.Nodes = append(cfg.Nodes, cpconfig.Node{ID: "eu-3", Region: "eu", Address: "10.0.0.3:7000"})
+			if err := store.ApplyConfig(ctx, cfg); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Unix(1000, 0).UTC()
+			for _, report := range []struct {
+				nodeID string
+				term   uint64
+			}{{"eu-2", 2}, {tt.nodeID, tt.term}} {
+				if _, err := store.UpsertHeartbeat(ctx, statestore.Heartbeat{
+					NodeID: report.nodeID, Region: "eu", ReceivedAt: now,
+					Partitions: []statestore.PartitionStatus{{
+						PartitionID: 0, Role: statestore.RaftRoleLeader, Ready: true,
+						LeaderID: report.nodeID, Term: report.term,
+					}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			view, err := store.LiveConfig(ctx, now, 15*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assignment, ok := view.Config.Assignment("eu", 0)
+			if !ok || assignment.LeaderNodeID != tt.wantLeader || assignment.Ready != tt.wantReady ||
+				assignment.Readable != tt.wantReady || assignment.Writable != tt.wantReady {
+				t.Fatalf("assignment = %+v, want leader %q with readiness %t", assignment, tt.wantLeader, tt.wantReady)
+			}
+		})
+	}
+}
+
 func TestLiveConfigMarksNodeStartingWithoutReadyPartitions(t *testing.T) {
 	t.Parallel()
 	store := statestore.NewMemory()

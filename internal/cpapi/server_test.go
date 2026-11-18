@@ -252,7 +252,10 @@ func TestGetConfigEmptyStore(t *testing.T) {
 func TestGetConfigGatewayReturnsLiveViewAtSameRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1000, 0).UTC()
-	srv, store := testServer(t, now)
+	clock := &mutableClock{now: now.Add(-cpapi.DefaultNodeTTL)}
+	store := statestore.NewMemory()
+	srv := cpapi.New(store, cpapi.WithClock(clock))
+	clock.Advance(cpapi.DefaultNodeTTL)
 	if err := store.ApplyConfig(context.Background(), cpconfigtest.Config(3)); err != nil {
 		t.Fatalf("ApplyConfig: %v", err)
 	}
@@ -301,6 +304,49 @@ func TestGetConfigGatewayReturnsLiveViewAtSameRevision(t *testing.T) {
 	}
 }
 
+func TestGetConfigGatewayWaitsForInitialReplicaHeartbeatsAtKnownRevision(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Unix(1000, 0).UTC()
+	cfg := cpconfigtest.Config(3)
+	store := statestore.NewMemory()
+	srv := cpapi.New(store, cpapi.WithClock(fixedClock{now: now}))
+	if err := store.ApplyConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range cfg.Nodes[:len(cfg.Nodes)-1] {
+		if _, err := store.UpsertHeartbeat(ctx, statestore.Heartbeat{
+			NodeID: node.ID, Region: node.Region, ReceivedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := &controlplanev1.GetConfigRequest{
+		NodeId: "gateway", Kind: controlplanev1.AgentKind_AGENT_KIND_GATEWAY,
+		KnownRevision: cfg.Revision,
+	}
+	resp, err := srv.GetConfig(ctx, request)
+	if err != nil || resp.GetRevision() != cfg.Revision || resp.GetConfig() != nil {
+		t.Fatalf("partial observations: GetConfig = %v, %v, want revision only", resp, err)
+	}
+	request.KnownRevision--
+	resp, err = srv.GetConfig(ctx, request)
+	if err != nil || resp.GetRevision() != cfg.Revision || resp.GetConfig() == nil {
+		t.Fatalf("new revision: GetConfig = %v, %v, want config", resp, err)
+	}
+	node := cfg.Nodes[len(cfg.Nodes)-1]
+	if _, err := store.UpsertHeartbeat(ctx, statestore.Heartbeat{
+		NodeID: node.ID, Region: node.Region, ReceivedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request.KnownRevision = cfg.Revision
+	resp, err = srv.GetConfig(ctx, request)
+	if err != nil || resp.GetConfig() == nil {
+		t.Fatalf("initial observations complete: GetConfig = %v, %v, want live view", resp, err)
+	}
+}
+
 func TestGetConfigGatewayExpiresStaleNode(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1000, 0).UTC()
@@ -319,8 +365,8 @@ func TestGetConfigGatewayExpiresStaleNode(t *testing.T) {
 		t.Fatalf("UpsertHeartbeat: %v", err)
 	}
 	req := &controlplanev1.GetConfigRequest{
-		NodeId: "gw-eu-1", KnownRevision: 3,
-		Kind: controlplanev1.AgentKind_AGENT_KIND_GATEWAY,
+		NodeId: "gw-eu-1",
+		Kind:   controlplanev1.AgentKind_AGENT_KIND_GATEWAY,
 	}
 	resp, err := srv.GetConfig(context.Background(), req)
 	if err != nil {
@@ -336,6 +382,7 @@ func TestGetConfigGatewayExpiresStaleNode(t *testing.T) {
 		t.Fatalf("eu-1 state = %q, want ready", state)
 	}
 
+	req.KnownRevision = resp.GetRevision()
 	clock.Advance(11 * time.Second)
 	resp, err = srv.GetConfig(context.Background(), req)
 	if err != nil {

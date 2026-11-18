@@ -85,6 +85,9 @@ type Heartbeat struct {
 type Snapshot struct {
 	Revision uint64
 	Config   *cpconfig.Config
+	// MissingReplicaHeartbeats indicates that some configured, non-draining replicas
+	// have never reported to this store. It is only populated by LiveConfig.
+	MissingReplicaHeartbeats bool
 }
 
 // Store — граница состояния Control Plane, используемая CP API. Production-

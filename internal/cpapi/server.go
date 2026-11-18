@@ -102,6 +102,7 @@ type Server struct {
 	log               *slog.Logger
 	heartbeatInterval time.Duration
 	nodeTTL           time.Duration
+	startedAt         time.Time
 	metrics           *cpmetrics.Metrics
 }
 
@@ -121,6 +122,7 @@ func New(store statestore.Store, opts ...Option) *Server {
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.startedAt = s.clock.Now()
 	return s
 }
 
@@ -220,9 +222,8 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 	}, nil
 }
 
-// GetConfig реализует controlplanev1.ControlPlaneAPI. Gateway всегда получает
-// актуальный live-view состава кластера, даже при совпадении revision; Storage
-// Node при совпадении revision получает только revision и сохраняет last-known-good.
+// GetConfig выдаёт Gateway live-view при той же revision. Во время старта CP
+// может вернуть только revision, пока назначенные реплики собирают наблюдения.
 func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
 	if req == nil {
 		s.metrics.ConfigPull(cpmetrics.PullError)
@@ -239,11 +240,14 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 
 	gateway := req.GetKind() == controlplanev1.AgentKind_AGENT_KIND_GATEWAY
 	var (
-		snapshot statestore.Snapshot
-		err      error
+		snapshot  statestore.Snapshot
+		err       error
+		warmingUp bool
 	)
 	if gateway {
-		snapshot, err = s.store.LiveConfig(ctx, s.clock.Now().UTC(), s.nodeTTL)
+		now := s.clock.Now()
+		snapshot, err = s.store.LiveConfig(ctx, now.UTC(), s.nodeTTL)
+		warmingUp = snapshot.MissingReplicaHeartbeats && now.Before(s.startedAt.Add(s.nodeTTL))
 	} else {
 		snapshot, err = s.store.Config(ctx)
 	}
@@ -271,7 +275,7 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 		)
 		return nil, status.Error(codes.Internal, "config snapshot is inconsistent")
 	}
-	if req.GetKnownRevision() == snapshot.Revision && !gateway {
+	if req.GetKnownRevision() == snapshot.Revision && (!gateway || warmingUp) {
 		s.metrics.ConfigPull(cpmetrics.PullUnchanged)
 		return &controlplanev1.GetConfigResponse{Revision: snapshot.Revision}, nil
 	}

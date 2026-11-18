@@ -120,24 +120,35 @@ func (s *MemoryStore) LiveConfig(ctx context.Context, now time.Time, ttl time.Du
 		}
 	}
 
-	alive := make(map[string]bool, len(config.Nodes))
+	type replicaKey struct {
+		nodeID      string
+		partitionID uint32
+	}
+	leaderTerms := make(map[replicaKey]uint64, len(config.Partitions))
+	missingReplicaHeartbeats := false
 	for i := range config.Nodes {
 		node := &config.Nodes[i]
+		if node.State == cpconfig.NodeStateDraining {
+			continue
+		}
 		heartbeat, ok := s.heartbeats[node.ID]
-		if !ok || heartbeat.Region != node.Region || now.Sub(heartbeat.ReceivedAt) > ttl {
+		if !ok || heartbeat.Region != node.Region {
+			missingReplicaHeartbeats = missingReplicaHeartbeats || assigned[node.ID]
 			node.State = cpconfig.NodeStateDead
 			continue
 		}
-		alive[node.ID] = true
-		switch node.State {
-		case cpconfig.NodeStateDraining:
+		if now.Sub(heartbeat.ReceivedAt) > ttl {
+			node.State = cpconfig.NodeStateDead
 			continue
 		}
 		ready := false
 		for _, partition := range heartbeat.Partitions {
-			if partition.Ready {
-				ready = true
-				break
+			if !partition.Ready {
+				continue
+			}
+			ready = true
+			if partition.Role == RaftRoleLeader && (partition.LeaderID == "" || partition.LeaderID == node.ID) {
+				leaderTerms[replicaKey{node.ID, partition.PartitionID}] = partition.Term
 			}
 		}
 		switch {
@@ -148,103 +159,37 @@ func (s *MemoryStore) LiveConfig(ctx context.Context, now time.Time, ttl time.Du
 		}
 	}
 
-	type partitionKey struct {
-		region    string
-		partition uint32
-	}
-	type leaderReport struct {
-		nodeID string
-		term   uint64
-	}
-	reported := make(map[partitionKey]leaderReport)
-	hinted := make(map[partitionKey]string)
-	for nodeID, heartbeat := range s.heartbeats {
-		if !alive[nodeID] {
-			continue
-		}
-		for _, partition := range heartbeat.Partitions {
-			if partition.PartitionID >= config.PartitionCount {
-				continue
-			}
-			key := partitionKey{region: heartbeat.Region, partition: partition.PartitionID}
-			if partition.Role == RaftRoleLeader && partition.Ready {
-				current, ok := reported[key]
-				if !ok || partition.Term > current.term || (partition.Term == current.term && nodeID < current.nodeID) {
-					reported[key] = leaderReport{nodeID: nodeID, term: partition.Term}
-				}
-			}
-			if partition.LeaderID != "" {
-				if current, ok := hinted[key]; !ok || partition.LeaderID < current {
-					hinted[key] = partition.LeaderID
-				}
-			}
-		}
-	}
-
+	masterRegion := config.MasterRegion()
 	for i := range config.Partitions {
 		assignment := &config.Partitions[i]
-		key := partitionKey{region: assignment.Region, partition: assignment.PartitionID}
-		candidate := assignment.LeaderNodeID
-		if report, ok := reported[key]; ok {
-			candidate = report.nodeID
-		} else if nodeID, ok := hinted[key]; ok {
-			candidate = nodeID
-		}
-		if candidate == assignment.LeaderNodeID {
-			continue
-		}
-		if !alive[candidate] {
-			continue
-		}
-		node, ok := config.NodeByID(candidate)
-		if !ok || node.Region != assignment.Region || node.State != cpconfig.NodeStateReady {
-			continue
-		}
-		replicas := false
+		var leaderID string
+		var term uint64
+		conflict := false
+		// Only assigned replicas can compete. A follower's report about its leader
+		// is diagnostic and cannot establish the leader's own readiness.
 		for _, nodeID := range assignment.ReplicaNodeIDs {
-			if nodeID == candidate {
-				replicas = true
-				break
-			}
-		}
-		if !replicas {
-			continue
-		}
-		assignment.LeaderNodeID = candidate
-	}
-
-	// Заполняем per-partition readiness по heartbeat выбранного лидера.
-	for i := range config.Partitions {
-		assignment := &config.Partitions[i]
-		assignment.Ready = false
-		assignment.Readable = false
-		assignment.Writable = false
-
-		heartbeat, ok := s.heartbeats[assignment.LeaderNodeID]
-		if !ok || heartbeat.Region != assignment.Region {
-			continue
-		}
-		node, ok := config.NodeByID(assignment.LeaderNodeID)
-		if !ok || node.State != cpconfig.NodeStateReady {
-			continue
-		}
-		region, ok := config.RegionByID(assignment.Region)
-		if !ok {
-			continue
-		}
-		for _, partition := range heartbeat.Partitions {
-			if partition.PartitionID != assignment.PartitionID {
+			reportedTerm, ok := leaderTerms[replicaKey{nodeID, assignment.PartitionID}]
+			if !ok {
 				continue
 			}
-			if partition.Role != RaftRoleLeader || !partition.Ready {
-				break
+			switch {
+			case leaderID == "" || reportedTerm > term:
+				leaderID, term, conflict = nodeID, reportedTerm, false
+			case reportedTerm == term:
+				conflict = true
 			}
-			assignment.Ready = true
-			assignment.Readable = true
-			assignment.Writable = region.Role == cpconfig.RegionRoleMaster
-			break
+		}
+		assignment.Ready = leaderID != "" && !conflict
+		assignment.Readable = assignment.Ready
+		assignment.Writable = assignment.Ready && assignment.Region == masterRegion
+		if assignment.Ready {
+			assignment.LeaderNodeID = leaderID
 		}
 	}
 
-	return Snapshot{Revision: s.snapshot.Revision, Config: config}, nil
+	return Snapshot{
+		Revision:                 s.snapshot.Revision,
+		Config:                   config,
+		MissingReplicaHeartbeats: missingReplicaHeartbeats,
+	}, nil
 }
