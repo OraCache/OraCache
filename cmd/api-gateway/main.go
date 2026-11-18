@@ -5,6 +5,7 @@
 // снимку.
 //
 // С флагом -listen Gateway пересылает клиентские RPC в storage-node.
+// Диагностика доступна через /routes, /healthz и /metrics.
 package main
 
 import (
@@ -26,6 +27,7 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	gatewayv1 "github.com/OraCache/oracache/gen/gateway/v1"
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/gateway"
 )
 
@@ -39,7 +41,7 @@ func main() {
 		pollInterval = flag.Duration("poll-interval", gateway.DefaultPollInterval, "config pull interval")
 		rpcTimeout   = flag.Duration("rpc-timeout", gateway.DefaultRPCTimeout, "single CP RPC timeout")
 		listen       = flag.String("listen", "", "client gRPC address (empty serves diagnostics only)")
-		statusListen = flag.String("status-listen", defaultStatusListen, `HTTP address for /routes and /healthz ("none" disables)`)
+		statusListen = flag.String("status-listen", defaultStatusListen, `HTTP address for /routes, /healthz and /metrics ("none" disables)`)
 	)
 	flag.Parse()
 	if *region == "" || *nodeID == "" {
@@ -143,6 +145,18 @@ func serveGateway(listener net.Listener, poller *gateway.Poller, logger *slog.Lo
 // newStatusHandler собирает диагностические эндпоинты routing map.
 func newStatusHandler(router *gateway.Router) http.Handler {
 	mux := http.NewServeMux()
+	metrics := cpmetrics.NewRegistry()
+	metrics.RegisterGaugeFunc("oracache_gateway_partitions_without_route", "Partitions without a route in the applied Gateway map.", func(context.Context) ([]cpmetrics.GaugeSample, error) {
+		snapshot := router.Routes()
+		if !snapshot.Ready() {
+			return nil, nil
+		}
+		return []cpmetrics.GaugeSample{
+			{Labels: map[string]string{"operation": "get"}, Value: float64(snapshot.MissingReads())},
+			{Labels: map[string]string{"operation": "put"}, Value: float64(snapshot.MissingWrites())},
+		}, nil
+	})
+	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/routes", func(w http.ResponseWriter, _ *http.Request) {
 		snapshot := router.Routes()
 		w.Header().Set("Content-Type", "application/json")
