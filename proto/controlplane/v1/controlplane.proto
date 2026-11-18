@@ -22,9 +22,8 @@ service ControlPlaneAPI {
   // а не sent_at, и сам по себе не меняет revision конфигурации.
   rpc ReportHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 
-  // GetConfig возвращает неизменяемый snapshot конфигурации. Клиент передаёт
-  // известную ему revision и сохраняет last-known-good snapshot, если ответ
-  // не содержит тела конфигурации.
+  // GetConfig возвращает конфигурацию и, для Gateway, наблюдаемое состояние
+  // назначенных реплик. Наблюдения могут меняться при той же revision.
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
 }
 
@@ -86,8 +85,10 @@ enum AgentKind {
 
 message GetConfigResponse {
   uint64 revision = 1;
-  // Пусто, когда revision == known_revision. В этом случае клиент должен
-  // сохранить last-known-good snapshot.
+  // При совпадении revision Storage Node получает ответ без config.
+  // Gateway при той же revision получает live-view, кроме периода запуска
+  // CP: пока собираются первые heartbeat, сервер может вернуть только
+  // revision. В этом случае Gateway сохраняет последнюю карту.
   ClusterConfig config = 2;
 }
 
@@ -116,7 +117,7 @@ message Node {
   string node_id = 1;
   string region = 2;
   string address = 3;
-  string state = 4; // состояние: starting/ready/draining/dead
+  string state = 4; // состояние: starting/ready/draining/dead; в live-view отражает liveness
   uint64 capacity_bytes = 5;
   string zone = 6; // домен отказа для anti-affinity
 }
@@ -124,6 +125,11 @@ message Node {
 message PartitionAssignment {
   uint32 partition_id = 1;
   string region = 2;                    // assignment привязан к региону
-  string leader_node_id = 3;            // локальный лидер в этом регионе
+  string leader_node_id = 3;            // локальный лидер; в live-view — по последним heartbeat
   repeated string replica_node_ids = 4; // включает лидера
+
+  // Поля live-view. В статическом snapshot могут быть false.
+  bool ready = 5;                       // назначенная реплика сообщает, что она готовый лидер
+  bool readable = 6;                    // партицию можно читать по strict-пути
+  bool writable = 7;                    // партицию можно писать (только master-регион)
 }
