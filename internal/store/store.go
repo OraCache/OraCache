@@ -123,15 +123,29 @@ func New(cfg Config) (*Store, error) {
 
 func (s *Store) Config() Config { return s.cfg }
 
+// Get returns a version and promotes the key in the LRU order.
 func (s *Store) Get(key string, rev uint64) GetResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.lookup(key, rev, true)
+}
 
+// Peek is Get without the LRU promotion. Replicated state machines use it so
+// that reads, which are served by one replica only, never change eviction order.
+func (s *Store) Peek(key string, rev uint64) GetResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookup(key, rev, false)
+}
+
+func (s *Store) lookup(key string, rev uint64, touch bool) GetResult {
 	e := s.entries[key]
 	if e == nil {
 		return GetResult{Status: GetMiss}
 	}
-	s.lru.MoveToFront(e.elem)
+	if touch {
+		s.lru.MoveToFront(e.elem)
+	}
 	latest := e.latest()
 	if rev == 0 {
 		rev = latest
