@@ -1,9 +1,7 @@
 // Package statestore определяет границу состояния Control Plane.
 //
-// MemoryStore — временное process-local хранилище для CP Phase 1. Оно теряет
-// всё состояние при рестарте и должно быть заменено etcd-backed реализацией до
-// production; см.
-// docs/architecture/ADR-001-cp-phase1-in-memory-store.md.
+// EtcdStore сохраняет состояние между процессами CP API. MemoryStore
+// предназначен для локального PoC и тестов.
 package statestore
 
 import (
@@ -67,8 +65,8 @@ type Resources struct {
 
 // Heartbeat — полный snapshot локального региона, присланный CP Agent.
 //
-// ReceivedAt выставляется часами CP API и является единственным входом для
-// liveness. SentAt — только диагностика: часы нод могут расходиться.
+// ReceivedAt выставляется часами CP API. Liveness определяется этим временем
+// в MemoryStore и наличием lease в EtcdStore. SentAt нужен для диагностики.
 type Heartbeat struct {
 	NodeID         string
 	Region         string
@@ -105,7 +103,7 @@ type Store interface {
 	// revision конфигурации. Heartbeat никогда не меняет revision конфигурации.
 	UpsertHeartbeat(ctx context.Context, heartbeat Heartbeat) (uint64, error)
 
-	// Heartbeat возвращает последний heartbeat ноды.
+	// Heartbeat возвращает последний heartbeat ноды, если он ещё есть в store.
 	Heartbeat(ctx context.Context, nodeID string) (Heartbeat, bool, error)
 
 	// HeartbeatReceipts returns receipts recorded while each node-region pair was
@@ -118,6 +116,7 @@ type Store interface {
 
 	// LiveConfig возвращает snapshot с актуальным live-состоянием нод и лидеров.
 	// Revision остаётся revision топологии: liveness не создаёт новую конфигурацию.
+	// MemoryStore использует now и ttl, EtcdStore читает status с активным lease.
 	LiveConfig(ctx context.Context, now time.Time, ttl time.Duration) (Snapshot, error)
 
 	// ApplyConfig публикует новую revision конфигурации. Revision должна расти,
@@ -149,6 +148,19 @@ func ValidateHeartbeat(h Heartbeat) error {
 			return fmt.Errorf("%w: duplicate partition %d", ErrInvalidHeartbeat, p.PartitionID)
 		}
 		seen[p.PartitionID] = struct{}{}
+	}
+	return nil
+}
+
+func validateConfigTransition(current Snapshot, next *cpconfig.Config) error {
+	if current.Config == nil {
+		return nil
+	}
+	if next.Revision <= current.Revision {
+		return fmt.Errorf("%w: have %d, got %d", cpconfig.ErrStaleRevision, current.Revision, next.Revision)
+	}
+	if next.PartitionCount != current.Config.PartitionCount {
+		return fmt.Errorf("%w: have %d, got %d", cpconfig.ErrPartitionCountChanged, current.Config.PartitionCount, next.PartitionCount)
 	}
 	return nil
 }
