@@ -14,6 +14,7 @@ $(GOTESTSUM):
 build:
 	go build -o bin/oracache ./cmd/oracache
 	go build -o bin/gateway ./cmd/gateway
+	go build -o bin/storage-node ./cmd/storage-node
 
 # Clear every expected report before even installing tools: an aborted run must
 # never publish an older module's results. Individual targets do the same.
