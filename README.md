@@ -1,5 +1,69 @@
 # OraCache
 
+Подними три ноды хранилища на ноутбуке и отправляй запросы прямо в любую из них. Для этого стенда не нужны Control Plane, gateway или отдельная база данных.
+
+## Запустить кластер
+
+Нужны запущенный Docker с Compose и **Go 1.27.3** для клиентской команды и тестов. Все команды ниже запускай из корня репозитория.
+
+```sh
+docker compose -f compose.storage.yaml up -d --build
+docker compose -f compose.storage.yaml ps
+```
+
+Должны запуститься `node-1`, `node-2` и `node-3`. Их клиентские адреса: `127.0.0.1:28091`, `127.0.0.1:28092`, `127.0.0.1:28093` соответственно. Порты доступны только с твоего компьютера. Если нода не запустилась, посмотри `docker compose -f compose.storage.yaml logs --tail=50`.
+
+## Отправить запросы
+
+Сначала найди лидера. Номер ноды заранее неизвестен, а запись и чтение по умолчанию работают только через лидера:
+
+```sh
+for port in 28091 28092 28093; do
+  printf '\nПорт %s\n' "$port"
+  ORACACHE_ENDPOINT="127.0.0.1:$port" go run ./cmd/oracache get --timeout=2s demo:key || continue
+done
+```
+
+Лидер вернёт JSON: `GET_STATUS_MISS`, если ключ ещё не записан, или `GET_STATUS_HIT`, если он уже есть. Ответ `not leader` от реплики — норма. Если так отвечают все три ноды, подожди пару секунд и повтори. Если всё ещё нет JSON, проверь ошибки CLI, `docker compose -f compose.storage.yaml ps` и логи.
+
+Подставь порт лидера вместо `28091` и попробуй запись, чтение и удаление:
+
+```sh
+export ORACACHE_ENDPOINT=127.0.0.1:28091
+go run ./cmd/oracache put demo:key hello  # PUT_STATUS_OK
+go run ./cmd/oracache get demo:key       # GET_STATUS_HIT, data: aGVsbG8= (hello в base64)
+go run ./cmd/oracache delete demo:key    # DELETE_STATUS_DELETED
+go run ./cmd/oracache get demo:key       # GET_STATUS_MISS
+```
+
+Чтобы почитать с реплики, останови весь стенд командой ниже и запусти его заново с `ORACACHE_STORAGE_READ_MODE=local docker compose -f compose.storage.yaml up -d --build`. Попробуй `put demo:key hello` на трёх адресах, пока один не вернёт `PUT_STATUS_OK`: запись по-прежнему принимает только лидер, а `get` в этом режиме его не определяет. Затем выполни `get demo:key` на другом порту. Ожидается `GET_STATUS_HIT`; сразу после записи реплика может ещё вернуть `GET_STATUS_MISS`, тогда повтори чтение.
+
+## Остановить стенд
+
+```sh
+docker compose -f compose.storage.yaml down
+```
+
+Данные хранятся в памяти и при остановке всего стенда пропадают. Чтобы начать с чистого листа, останови и подними весь стенд заново. Не перезапускай одну остановленную ноду под тем же ID, пока остальные работают.
+
+## Запустить тесты
+
+Для `make`-команд нужен Make, для тестов с `-race` — включённый cgo и C-компилятор.
+
+```sh
+make test
+go test -race -count=1 -v ./internal/node -run '^TestStandaloneStorageCluster$'
+make test-e2e
+```
+
+`make test` запускает обычные тесты без Docker. Сквозной тест трёх нод тоже не требует Docker: он сам запускает ноды и проверяет репликацию, чтение и запись после смены лидера. `make test-e2e` проверяет локальный кэш без Raft, а не кластер. Для ручной проверки Docker-стенда пройди сценарий `put → get → delete → get` выше.
+
+---
+
+## Локальный кэш без Raft
+
+Обычный `docker compose up` запускает `cmd/gateway`. Этот сервер хранит данные в собственной памяти и не пересылает запросы в `storage-node`. Примеры и ограничения ниже относятся только к этому серверу.
+
 Локальный Go CLI и синхронный in-memory gRPC сервер по
 [`proto/cache/gateway.proto`](proto/cache/gateway.proto). Реализованы все пять
 RPC `CacheGateway`: `Get`, `Put`, `Delete`, `BatchGet`, `BatchPut`. CLI предоставляет
@@ -16,7 +80,7 @@ RPC `CacheGateway`: `Get`, `Put`, `Delete`, `BatchGet`, `BatchPut`. CLI пред
 > Это тестовый сервер: **plaintext gRPC, без TLS и аутентификации**. По умолчанию
 > слушает только localhost; не публикуйте его в недоверенную сеть.
 
-## Быстрый запуск
+### Запуск локального кэша
 
 С Docker и Compose v2 достаточно:
 
@@ -111,7 +175,7 @@ MISS, VERSION_NOT_FOUND, CONFLICT, NOT_FOUND тоже возвращаются J
 кодом 0. Проверяйте поле `status`. Ошибки аргументов, файлов, превышение лимита
 на стороне CLI, недоступность сервера и ошибки gRPC дают ненулевой код выхода.
 
-## Семантика сервера
+### Семантика локального кэша
 
 - KEY — непустая строка. Некорректный ключ даёт gRPC `InvalidArgument`.
 - `Put` назначает возрастающие номера **отдельно для каждого ключа**, начиная с 1.

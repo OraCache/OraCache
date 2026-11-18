@@ -1,0 +1,31 @@
+name: oracache-storage
+
+x-storage: &storage
+  build:
+    context: .
+    dockerfile: Dockerfile.storage
+  entrypoint:
+    - /storage-node
+    - --grpc-listen=0.0.0.0:28091
+    - --raft-listen=0.0.0.0:28191
+    - --read-mode=${ORACACHE_STORAGE_READ_MODE:-linearizable}
+    - --peer=1,node-1,127.0.0.1:28091,http://node-1:28191/raft
+    - --peer=2,node-2,127.0.0.1:28092,http://node-2:28191/raft
+    - --peer=3,node-3,127.0.0.1:28093,http://node-3:28191/raft
+
+services:
+  node-1:
+    <<: *storage
+    command: [--node-id=node-1, --peer-id=1]
+    ports:
+      - "127.0.0.1:28091:28091"
+  node-2:
+    <<: *storage
+    command: [--node-id=node-2, --peer-id=2]
+    ports:
+      - "127.0.0.1:28092:28091"
+  node-3:
+    <<: *storage
+    command: [--node-id=node-3, --peer-id=3]
+    ports:
+      - "127.0.0.1:28093:28091"
