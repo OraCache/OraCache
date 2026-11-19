@@ -83,9 +83,11 @@ generate: $(PROTOC_ARCHIVE)
 
 test-e2e:
 	mkdir -p $(REPORTS)
-	rm -f $(REPORTS)/e2e.xml
+	rm -f $(REPORTS)/e2e.xml $(REPORTS)/e2e-cp.xml
 	$(MAKE) $(GOTESTSUM)
-	cd integration/e2e && GOWORK=off $(GOTESTSUM) --format testname --junitfile $(REPORTS)/e2e.xml -- -tags=e2e -count=1 -timeout=10m ./...
+	# Separate Go invocations keep the Compose projects in separate Ryuk sessions.
+	cd integration/e2e && GOWORK=off $(GOTESTSUM) --format testname --junitfile $(REPORTS)/e2e.xml -- -tags=e2e -count=1 -timeout=10m -skip '^TestControlPlaneGatewayFailover$$' ./...
+	cd integration/e2e && GOWORK=off $(GOTESTSUM) --format testname --junitfile $(REPORTS)/e2e-cp.xml -- -tags=e2e -count=1 -timeout=10m -run '^TestControlPlaneGatewayFailover$$' .
 
 docker-build:
 	docker compose build gateway

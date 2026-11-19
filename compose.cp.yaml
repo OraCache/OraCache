@@ -43,5 +43,5 @@ services:
       - --status-listen=0.0.0.0:9466
       - --poll-interval=1s
     ports:
-      - "127.0.0.1:28080:28080"
-      - "127.0.0.1:9466:9466"
+      - "127.0.0.1:${ORACACHE_CP_PORT:-28080}:28080"
+      - "127.0.0.1:${ORACACHE_CP_STATUS_PORT:-9466}:9466"

@@ -44,6 +44,8 @@ GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
   -run '^TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss$'
 ```
 
+`make test-e2e` дополнительно запускает стенд в Docker и проверяет чтение и запись через тот же gateway после остановки контейнера лидера. Тест сам поднимает и удаляет свой Compose-проект.
+
 Правила маршрутизации и повторов описаны в [ADR-004](docs/ADR-004-cp-raft-gateway-routing.md).
 
 ---
@@ -106,7 +108,7 @@ go test -race -count=1 -v ./internal/node -run '^TestStandaloneStorageCluster$'
 make test-e2e
 ```
 
-`make test` запускает обычные тесты без Docker. Сквозной тест трёх нод тоже не требует Docker: он сам запускает ноды и проверяет репликацию, чтение и запись после смены лидера. `make test-e2e` проверяет локальный кэш без Raft, а не кластер. Для ручной проверки Docker-стенда пройди сценарий `put → get → delete → get` выше.
+`make test` запускает обычные тесты без Docker. Сквозной тест трёх нод тоже не требует Docker: он проверяет репликацию, чтение и запись после смены лидера. `make test-e2e` проверяет два других стенда: локальный кэш без Raft и PoC с Control Plane. Для ручной проверки этого Docker-стенда подходит сценарий `put → get → delete → get` выше.
 
 ---
 
@@ -306,7 +308,7 @@ git diff --exit-code -- gen
 бинарник и Go-кеши. В консоли видны имена тестов, PASS/FAIL и итог.
 Ненулевой код `go test` сохраняется через gotestsum и Make.
 JUnit-файлы: `.reports/gateway.xml`, `.reports/protobuf.xml`,
-`.reports/cli.xml`, `.reports/e2e.xml`; каталог игнорируется git.
+`.reports/cli.xml`, `.reports/e2e.xml`, `.reports/e2e-cp.xml`; каталог игнорируется git.
 Перед запуском target удаляет свой старый отчёт, а `make test` — все три
 обычных отчёта ещё до установки инструмента. Если запуск оборвался до
 создания XML, отчёта нет: это не означает «0 тестов успешно».
