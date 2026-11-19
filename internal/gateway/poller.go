@@ -36,6 +36,7 @@ type Poller struct {
 	Interval   time.Duration
 	RPCTimeout time.Duration
 	Logger     *slog.Logger
+	refresh    chan struct{}
 }
 
 // NewPoller создаёт Gateway config poller с production-настройками по умолчанию.
@@ -47,6 +48,15 @@ func NewPoller(client ConfigClient, router *Router, nodeID string) *Poller {
 		Interval:   DefaultPollInterval,
 		RPCTimeout: DefaultRPCTimeout,
 		Logger:     slog.Default(),
+		refresh:    make(chan struct{}, 1),
+	}
+}
+
+// RequestRefresh coalesces leader-change signals without doing network IO.
+func (p *Poller) RequestRefresh() {
+	select {
+	case p.refresh <- struct{}{}:
+	default:
 	}
 }
 
@@ -134,9 +144,10 @@ func (p *Poller) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := p.Refresh(ctx); err != nil && ctx.Err() == nil {
-				p.logger().WarnContext(ctx, "gateway config refresh failed", "node_id", p.NodeID, "error", err)
-			}
+		case <-p.refresh:
+		}
+		if err := p.Refresh(ctx); err != nil && ctx.Err() == nil {
+			p.logger().WarnContext(ctx, "gateway config refresh failed", "node_id", p.NodeID, "error", err)
 		}
 	}
 }

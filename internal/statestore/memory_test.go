@@ -408,6 +408,34 @@ func TestLiveConfigChoosesLeaderAmongAssignedReplicas(t *testing.T) {
 	}
 }
 
+func TestLiveConfigUsesOnlyReadyReplicasInObservedTerm(t *testing.T) {
+	store := statestore.NewMemory()
+	if err := store.ApplyConfig(t.Context(), cpconfigtest.Config(1)); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1000, 0).UTC()
+	report := func(nodeID string, term uint64, role statestore.RaftRole) {
+		t.Helper()
+		if _, err := store.UpsertHeartbeat(t.Context(), statestore.Heartbeat{
+			NodeID: nodeID, Region: "eu", ReceivedAt: now,
+			Partitions: []statestore.PartitionStatus{{PartitionID: 0, Term: term, Role: role, Ready: true}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report("eu-1", 5, statestore.RaftRoleLeader)
+	report("eu-2", 6, statestore.RaftRoleFollower)
+	view, err := store.LiveConfig(t.Context(), now, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, ok := view.Config.Assignment("eu", 0)
+	if !ok || a.Ready || a.Readable || a.Writable || a.ObservedTerm != 6 ||
+		len(a.ReadyReplicaNodeIDs) != 1 || a.ReadyReplicaNodeIDs[0] != "eu-2" {
+		t.Fatalf("expected only the term-6 follower to be eligible: %+v", a)
+	}
+}
+
 func TestLiveConfigMarksNodeStartingWithoutReadyPartitions(t *testing.T) {
 	t.Parallel()
 	store := statestore.NewMemory()

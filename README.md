@@ -315,14 +315,67 @@ curl localhost:9464/metrics | grep oracache_cp_
 или по истечении `-node-ttl` с запуска CP (по умолчанию 15 с). Gateway без карты
 или с более старой ревизией сразу получает доступный live-view.
 
-В Phase 1 heartbeat и карта хранятся в памяти. `oracache-node` на стенде
-публикует заданные флагами статусы, а `api-gateway` показывает маршруты через
-`/routes`. Постоянное хранилище состояния CP и интеграция с реальными Raft
-группами относятся к следующим этапам.
+В этом режиме heartbeat и карта хранятся в памяти. `oracache-node` публикует
+заданные флагами статусы, а `api-gateway` показывает подтверждённых лидеров
+через `/routes`.
 
 Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
 контракт CP API, TTL/liveness, выбор лидера среди назначенных реплик, циклы
 агента и сохранение маршрута при рестарте CP через loopback gRPC.
+
+### Control Plane и Gateway на реальном Raft
+
+Сценарий использует одну локальную Raft-группу из трёх `storage-node`.
+Агент считывает реальные статусы Raft. С флагом `-listen` API Gateway
+принимает клиентские RPC и пересылает их готовым репликам.
+Резервные попытки ограничены по времени и числу запросов. Если нода ответила
+`NOT_LEADER`, Gateway проверяет адрес подсказки по принятой карте и запрашивает
+обновление карты в фоне. Записи с неизвестным результатом клиенту возвращаются
+с исходной ошибкой.
+
+В первом терминале:
+
+```sh
+make build
+./bin/cp-api -config configs/cp-raft-local.json -listen 127.0.0.1:28081
+```
+
+Во втором терминале, из корня репозитория:
+
+```bash
+peers=(
+  -peer=1,node-1,127.0.0.1:28091,http://127.0.0.1:28191/raft
+  -peer=2,node-2,127.0.0.1:28092,http://127.0.0.1:28192/raft
+  -peer=3,node-3,127.0.0.1:28093,http://127.0.0.1:28193/raft
+)
+for i in 1 2 3; do
+  ./bin/storage-node -node-id="node-$i" -peer-id="$i" -cp-addr=127.0.0.1:28081 \
+    -heartbeat-interval=1s -grpc-listen="127.0.0.1:2809$i" \
+    -raft-listen="127.0.0.1:2819$i" "${peers[@]}" &
+done
+wait
+```
+
+В третьем терминале:
+
+```sh
+./bin/api-gateway -region region-a -node-id gw-local -cp-addr 127.0.0.1:28081 \
+  -listen 127.0.0.1:28080 -poll-interval 1s
+```
+
+После появления маршрута партиции `0` в `curl -s localhost:9466/routes`:
+
+```sh
+export ORACACHE_ENDPOINT=127.0.0.1:28080
+./bin/oracache put profile:1 hello --expected-rev 0
+./bin/oracache get profile:1
+GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
+  -run '^TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss$'
+```
+
+Стенд использует локальные порты, открытый gRPC и Store/Raft в памяти.
+Для повторного ручного запуска пересоздайте все три ноды вместе.
+Политика выбора маршрута описана в [ADR-004](docs/ADR-004-cp-raft-gateway-routing.md).
 
 ## Go workspace и модули
 

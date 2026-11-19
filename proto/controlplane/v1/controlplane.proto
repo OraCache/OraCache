@@ -132,4 +132,10 @@ message PartitionAssignment {
   bool ready = 5;                       // назначенная реплика сообщает, что она готовый лидер
   bool readable = 6;                    // партицию можно читать по strict-пути
   bool writable = 7;                    // партицию можно писать (только master-регион)
+  // Максимальный Raft term из свежих отчётов назначенных реплик.
+  uint64 observed_term = 8;
+  // Реплики, сообщившие готовность для этой партиции в observed_term.
+  repeated string ready_replica_node_ids = 9;
+  // Две готовые реплики заявили лидерство в observed_term.
+  bool leader_conflict = 10;
 }

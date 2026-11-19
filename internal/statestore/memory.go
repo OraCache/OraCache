@@ -108,88 +108,13 @@ func (s *MemoryStore) LiveConfig(ctx context.Context, now time.Time, ttl time.Du
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.snapshot.Config == nil {
-		return Snapshot{Revision: s.snapshot.Revision}, nil
-	}
-
-	config := s.snapshot.Config.Clone()
-	assigned := make(map[string]bool, len(config.Nodes))
-	for i := range config.Partitions {
-		for _, nodeID := range config.Partitions[i].ReplicaNodeIDs {
-			assigned[nodeID] = true
-		}
-	}
-
-	type replicaKey struct {
-		nodeID      string
-		partitionID uint32
-	}
-	leaderTerms := make(map[replicaKey]uint64, len(config.Partitions))
-	missingReplicaHeartbeats := false
-	for i := range config.Nodes {
-		node := &config.Nodes[i]
-		if node.State == cpconfig.NodeStateDraining {
-			continue
-		}
+	return projectLiveConfig(s.snapshot, func(node cpconfig.Node) replicaHeartbeat {
 		heartbeat, ok := s.heartbeats[node.ID]
-		if !ok || heartbeat.Region != node.Region {
-			missingReplicaHeartbeats = missingReplicaHeartbeats || assigned[node.ID]
-			node.State = cpconfig.NodeStateDead
-			continue
+		received := ok && heartbeat.Region == node.Region
+		return replicaHeartbeat{
+			heartbeat: heartbeat,
+			received:  received,
+			live:      received && now.Sub(heartbeat.ReceivedAt) <= ttl,
 		}
-		if now.Sub(heartbeat.ReceivedAt) > ttl {
-			node.State = cpconfig.NodeStateDead
-			continue
-		}
-		ready := false
-		for _, partition := range heartbeat.Partitions {
-			if !partition.Ready {
-				continue
-			}
-			ready = true
-			if partition.Role == RaftRoleLeader && (partition.LeaderID == "" || partition.LeaderID == node.ID) {
-				leaderTerms[replicaKey{node.ID, partition.PartitionID}] = partition.Term
-			}
-		}
-		switch {
-		case ready, !assigned[node.ID]:
-			node.State = cpconfig.NodeStateReady
-		default:
-			node.State = cpconfig.NodeStateStarting
-		}
-	}
-
-	masterRegion := config.MasterRegion()
-	for i := range config.Partitions {
-		assignment := &config.Partitions[i]
-		var leaderID string
-		var term uint64
-		conflict := false
-		// Only assigned replicas can compete. A follower's report about its leader
-		// is diagnostic and cannot establish the leader's own readiness.
-		for _, nodeID := range assignment.ReplicaNodeIDs {
-			reportedTerm, ok := leaderTerms[replicaKey{nodeID, assignment.PartitionID}]
-			if !ok {
-				continue
-			}
-			switch {
-			case leaderID == "" || reportedTerm > term:
-				leaderID, term, conflict = nodeID, reportedTerm, false
-			case reportedTerm == term:
-				conflict = true
-			}
-		}
-		assignment.Ready = leaderID != "" && !conflict
-		assignment.Readable = assignment.Ready
-		assignment.Writable = assignment.Ready && assignment.Region == masterRegion
-		if assignment.Ready {
-			assignment.LeaderNodeID = leaderID
-		}
-	}
-
-	return Snapshot{
-		Revision:                 s.snapshot.Revision,
-		Config:                   config,
-		MissingReplicaHeartbeats: missingReplicaHeartbeats,
-	}, nil
+	}), nil
 }

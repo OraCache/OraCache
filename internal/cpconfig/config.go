@@ -118,13 +118,16 @@ type Node struct {
 // Ready/Readable/Writable заполняются live-view по heartbeat. В статическом
 // bootstrap snapshot они могут быть false.
 type PartitionAssignment struct {
-	PartitionID    uint32   `json:"partition_id"`
-	Region         string   `json:"region"`
-	LeaderNodeID   string   `json:"leader_node_id"`
-	ReplicaNodeIDs []string `json:"replica_node_ids"`
-	Ready          bool     `json:"ready,omitempty"`
-	Readable       bool     `json:"readable,omitempty"`
-	Writable       bool     `json:"writable,omitempty"`
+	PartitionID         uint32   `json:"partition_id"`
+	Region              string   `json:"region"`
+	LeaderNodeID        string   `json:"leader_node_id"`
+	ReplicaNodeIDs      []string `json:"replica_node_ids"`
+	Ready               bool     `json:"ready,omitempty"`
+	Readable            bool     `json:"readable,omitempty"`
+	Writable            bool     `json:"writable,omitempty"`
+	ObservedTerm        uint64   `json:"observed_term,omitempty"`
+	ReadyReplicaNodeIDs []string `json:"ready_replica_node_ids,omitempty"`
+	LeaderConflict      bool     `json:"leader_conflict,omitempty"`
 }
 
 // Validate проверяет инварианты конфигурации Control Plane. Вызывается перед
@@ -236,6 +239,19 @@ func (c *Config) Validate() error {
 		if _, ok := replicas[a.LeaderNodeID]; !ok {
 			return fmt.Errorf("%w: leader %q is not a replica in assignment (%s,%d)", ErrInvalidConfig, a.LeaderNodeID, a.Region, a.PartitionID)
 		}
+		leaderReady := false
+		for _, nodeID := range a.ReadyReplicaNodeIDs {
+			if _, ok := replicas[nodeID]; !ok {
+				return fmt.Errorf("%w: ready node %q is not a replica in assignment (%s,%d)", ErrInvalidConfig, nodeID, a.Region, a.PartitionID)
+			}
+			leaderReady = leaderReady || nodeID == a.LeaderNodeID
+		}
+		if a.Ready && len(a.ReadyReplicaNodeIDs) != 0 && !leaderReady {
+			return fmt.Errorf("%w: ready assignment (%s,%d) has no ready leader", ErrInvalidConfig, a.Region, a.PartitionID)
+		}
+		if a.LeaderConflict && a.Ready {
+			return fmt.Errorf("%w: assignment (%s,%d) is ready despite a leader conflict", ErrInvalidConfig, a.Region, a.PartitionID)
+		}
 		if a.Readable && !a.Ready {
 			return fmt.Errorf("%w: assignment (%s,%d) is readable but not ready", ErrInvalidConfig, a.Region, a.PartitionID)
 		}
@@ -338,6 +354,7 @@ func (c *Config) Clone() *Config {
 	for i := range c.Partitions {
 		out.Partitions[i] = c.Partitions[i]
 		out.Partitions[i].ReplicaNodeIDs = append([]string(nil), c.Partitions[i].ReplicaNodeIDs...)
+		out.Partitions[i].ReadyReplicaNodeIDs = append([]string(nil), c.Partitions[i].ReadyReplicaNodeIDs...)
 	}
 	return &out
 }

@@ -38,8 +38,21 @@ type snapshot struct {
 	revision       uint64
 	partitionCount uint32
 	masterRegion   string
-	local          map[uint32]Leader
-	write          map[uint32]Leader
+	local          map[uint32]partitionRoute
+	write          map[uint32]partitionRoute
+}
+
+type partitionRoute struct {
+	region      string
+	leader      Leader
+	replicas    []Leader
+	observation leaderObservation
+}
+
+type leaderObservation struct {
+	term     uint64
+	nodeID   string
+	conflict bool
 }
 
 // Router — lock-free читатель неизменяемого routing snapshot.
@@ -117,6 +130,8 @@ func (r *Router) ApplyView(cfg *cpconfig.Config) error {
 		if cfg.PartitionCount != old.partitionCount {
 			return fmt.Errorf("%w: have %d, got %d", ErrPartitionCountChanged, old.partitionCount, cfg.PartitionCount)
 		}
+		keepLeaderObservations(old.local, next.local)
+		keepLeaderObservations(old.write, next.write)
 	}
 	r.cur.Store(next)
 	return nil
@@ -135,58 +150,98 @@ func buildSnapshotMode(localRegion string, cfg *cpconfig.Config, live bool) (*sn
 		revision:       cfg.Revision,
 		partitionCount: cfg.PartitionCount,
 		masterRegion:   masterRegion,
-		local:          make(map[uint32]Leader, cfg.PartitionCount),
-		write:          make(map[uint32]Leader, cfg.PartitionCount),
+		local:          make(map[uint32]partitionRoute, cfg.PartitionCount),
+		write:          make(map[uint32]partitionRoute, cfg.PartitionCount),
 	}
-	for p := uint32(0); p < cfg.PartitionCount; p++ {
-		localAssignment, ok := cfg.Assignment(localRegion, p)
-		switch {
-		case !ok && live:
-			// В live-view локальный маршрут может отсутствовать, но write-маршрут
-			// master-региона всё равно должен быть доступен.
-		case !ok:
-			return nil, fmt.Errorf("%w: local region %q has no assignment for partition %d", ErrNoLeader, localRegion, p)
-		default:
-			if live && (!localAssignment.Ready || !localAssignment.Readable) {
-				// Партиция ещё не готова на локальном лидере.
-			} else {
-				localLeader, err := resolveLeader(cfg, localAssignment)
-				if err != nil {
-					if !live {
-						return nil, err
-					}
-				} else {
-					s.local[p] = localLeader
-				}
-			}
-		}
-
-		writeAssignment, ok := cfg.Assignment(masterRegion, p)
-		if !ok {
-			if live {
-				continue
-			}
-			return nil, fmt.Errorf("%w: master region %q has no assignment for partition %d", ErrNoLeader, masterRegion, p)
-		}
-		if live && (!writeAssignment.Ready || !writeAssignment.Writable) {
+	for _, assignment := range cfg.Partitions {
+		if assignment.Region != localRegion && assignment.Region != masterRegion {
 			continue
 		}
-		writeLeader, err := resolveLeader(cfg, writeAssignment)
+		route, err := buildPartitionRoute(cfg, assignment, live)
 		if err != nil {
-			if !live {
-				return nil, err
-			}
-		} else {
-			s.write[p] = writeLeader
+			return nil, err
+		}
+		if assignment.Region == localRegion {
+			s.local[assignment.PartitionID] = route.forOperation(live && assignment.Ready && !assignment.Readable)
+		}
+		if assignment.Region == masterRegion {
+			s.write[assignment.PartitionID] = route.forOperation(live && assignment.Ready && !assignment.Writable)
 		}
 	}
 	return s, nil
 }
 
-func resolveLeader(cfg *cpconfig.Config, assignment cpconfig.PartitionAssignment) (Leader, error) {
-	node, ok := cfg.NodeByID(assignment.LeaderNodeID)
+func (route partitionRoute) forOperation(disabled bool) partitionRoute {
+	if disabled {
+		route.leader, route.replicas = Leader{}, nil
+	}
+	return route
+}
+
+func buildPartitionRoute(cfg *cpconfig.Config, assignment cpconfig.PartitionAssignment, live bool) (partitionRoute, error) {
+	route := partitionRoute{region: assignment.Region}
+	if live {
+		route.observation = leaderObservation{term: assignment.ObservedTerm, conflict: assignment.LeaderConflict}
+	}
+	if !live || assignment.Ready {
+		leader, err := resolveReplica(cfg, assignment, assignment.LeaderNodeID)
+		if err != nil && !live {
+			return partitionRoute{}, err
+		}
+		route.leader = leader
+		route.observation.nodeID = leader.NodeID
+	}
+	if route.observation.conflict {
+		return route, nil
+	}
+
+	candidates := assignment.ReplicaNodeIDs
+	if live {
+		candidates = assignment.ReadyReplicaNodeIDs
+		// A server using the previous contract only reports the ready leader.
+		if len(candidates) == 0 && route.leader.NodeID != "" {
+			candidates = []string{route.leader.NodeID}
+		}
+	}
+	for _, id := range candidates {
+		if replica, err := resolveReplica(cfg, assignment, id); err == nil {
+			route.replicas = append(route.replicas, replica)
+		}
+	}
+	return route, nil
+}
+
+// keepLeaderObservations retains the highest known election term for this
+// region and partition without retaining the liveness of an expired leader.
+func keepLeaderObservations(old, next map[uint32]partitionRoute) {
+	for partitionID, route := range next {
+		previous := old[partitionID]
+		if previous.region != route.region || previous.observation.term == 0 {
+			continue
+		}
+		switch {
+		case route.observation.term < previous.observation.term:
+			route.observation = previous.observation
+			route.leader, route.replicas = Leader{}, nil
+		case route.observation.term == previous.observation.term:
+			last, incoming := previous.observation, route.observation
+			if incoming.nodeID == "" {
+				incoming.nodeID = last.nodeID
+			}
+			incoming.conflict = incoming.conflict || last.conflict || (last.nodeID != "" && incoming.nodeID != last.nodeID)
+			route.observation = incoming
+			if incoming.conflict {
+				route.leader, route.replicas = Leader{}, nil
+			}
+		}
+		next[partitionID] = route
+	}
+}
+
+func resolveReplica(cfg *cpconfig.Config, assignment cpconfig.PartitionAssignment, nodeID string) (Leader, error) {
+	node, ok := cfg.NodeByID(nodeID)
 	if !ok {
-		return Leader{}, fmt.Errorf("%w: partition %d references unknown leader %q", ErrNoLeader, assignment.PartitionID, assignment.LeaderNodeID)
+		return Leader{}, fmt.Errorf("%w: partition %d references unknown replica %q", ErrNoLeader, assignment.PartitionID, nodeID)
 	}
 	if node.Region != assignment.Region {
 		return Leader{}, fmt.Errorf("%w: leader %q is outside region %q", ErrNoLeader, node.ID, assignment.Region)
@@ -269,12 +324,12 @@ func (r *Router) WriteLeaderForKey(key string) (Leader, error) {
 	return routeFor(cur.write, partition.Of(key, cur.partitionCount), cur.partitionCount)
 }
 
-func routeFor(routes map[uint32]Leader, partitionID, partitionCount uint32) (Leader, error) {
+func routeFor(routes map[uint32]partitionRoute, partitionID, partitionCount uint32) (Leader, error) {
 	if partitionID >= partitionCount {
 		return Leader{}, fmt.Errorf("%w: %d >= %d", ErrPartitionOutOfRange, partitionID, partitionCount)
 	}
-	leader, ok := routes[partitionID]
-	if !ok {
+	leader := routes[partitionID].leader
+	if leader.NodeID == "" {
 		return Leader{}, fmt.Errorf("%w: partition %d", ErrNoLeader, partitionID)
 	}
 	return leader, nil

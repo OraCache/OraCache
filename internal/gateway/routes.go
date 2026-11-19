@@ -1,8 +1,8 @@
 package gateway
 
 // RoutesSnapshot — снимок routing map для диагностики и админ-эндпоинтов.
-// Он показывает, куда Gateway отправил бы GET и PUT на данный момент: именно
-// этим проверяется требование «gateway знает, куда маршрутизировать запросы».
+// ReadRoutes и WriteRoutes показывают подтверждённых Control Plane лидеров.
+// Резервные попытки к готовым репликам не считаются маршрутами к лидеру.
 type RoutesSnapshot struct {
 	Revision       uint64            `json:"revision"`
 	LocalRegion    string            `json:"local_region"`
@@ -33,12 +33,16 @@ func (r *Router) Routes() RoutesSnapshot {
 	snapshot.MasterRegion = cur.masterRegion
 	snapshot.PartitionCount = cur.partitionCount
 	snapshot.ReadRoutes = make(map[uint32]Leader, len(cur.local))
-	for id, leader := range cur.local {
-		snapshot.ReadRoutes[id] = leader
+	for id, route := range cur.local {
+		if route.leader.NodeID != "" {
+			snapshot.ReadRoutes[id] = route.leader
+		}
 	}
 	snapshot.WriteRoutes = make(map[uint32]Leader, len(cur.write))
-	for id, leader := range cur.write {
-		snapshot.WriteRoutes[id] = leader
+	for id, route := range cur.write {
+		if route.leader.NodeID != "" {
+			snapshot.WriteRoutes[id] = route.leader
+		}
 	}
 	return snapshot
 }

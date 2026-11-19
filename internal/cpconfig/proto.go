@@ -51,13 +51,16 @@ func FromProto(p *controlplanev1.ClusterConfig) (*Config, error) {
 			return nil, fmt.Errorf("%w: assignment %d is nil", ErrInvalidConfig, i)
 		}
 		cfg.Partitions = append(cfg.Partitions, PartitionAssignment{
-			PartitionID:    a.GetPartitionId(),
-			Region:         a.GetRegion(),
-			LeaderNodeID:   a.GetLeaderNodeId(),
-			ReplicaNodeIDs: append([]string(nil), a.GetReplicaNodeIds()...),
-			Ready:          a.GetReady(),
-			Readable:       a.GetReadable(),
-			Writable:       a.GetWritable(),
+			PartitionID:         a.GetPartitionId(),
+			Region:              a.GetRegion(),
+			LeaderNodeID:        a.GetLeaderNodeId(),
+			ReplicaNodeIDs:      append([]string(nil), a.GetReplicaNodeIds()...),
+			Ready:               a.GetReady(),
+			Readable:            a.GetReadable(),
+			Writable:            a.GetWritable(),
+			ObservedTerm:        a.GetObservedTerm(),
+			ReadyReplicaNodeIDs: append([]string(nil), a.GetReadyReplicaNodeIds()...),
+			LeaderConflict:      a.GetLeaderConflict(),
 		})
 	}
 	if err := cfg.Validate(); err != nil {
@@ -101,13 +104,16 @@ func (c *Config) ToProto() *controlplanev1.ClusterConfig {
 	for i := range c.Partitions {
 		a := c.Partitions[i]
 		out.Partitions = append(out.Partitions, &controlplanev1.PartitionAssignment{
-			PartitionId:    a.PartitionID,
-			Region:         a.Region,
-			LeaderNodeId:   a.LeaderNodeID,
-			ReplicaNodeIds: append([]string(nil), a.ReplicaNodeIDs...),
-			Ready:          a.Ready,
-			Readable:       a.Readable,
-			Writable:       a.Writable,
+			PartitionId:         a.PartitionID,
+			Region:              a.Region,
+			LeaderNodeId:        a.LeaderNodeID,
+			ReplicaNodeIds:      append([]string(nil), a.ReplicaNodeIDs...),
+			Ready:               a.Ready,
+			Readable:            a.Readable,
+			Writable:            a.Writable,
+			ObservedTerm:        a.ObservedTerm,
+			ReadyReplicaNodeIds: append([]string(nil), a.ReadyReplicaNodeIDs...),
+			LeaderConflict:      a.LeaderConflict,
 		})
 	}
 	return out

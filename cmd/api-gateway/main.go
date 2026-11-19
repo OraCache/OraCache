@@ -4,14 +4,13 @@
 // каждом запросе: CP недоступен — Gateway работает по последнему удачному
 // снимку.
 //
-// Клиентские RPC Get/Put появятся вместе с контрактом gateway.v1 (Phase 2);
-// сейчас это PoC, поэтому маршруты отдаются HTTP-эндпоинтами /routes и
-// /healthz, которыми и проверяется требование «gateway знает, куда маршрутизировать».
+// С флагом -listen Gateway пересылает клиентские RPC в storage-node.
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -26,6 +25,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
+	gatewayv1 "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/gateway"
 )
 
@@ -38,6 +38,7 @@ func main() {
 		cpAddr       = flag.String("cp-addr", "127.0.0.1:50052", "Control Plane API address")
 		pollInterval = flag.Duration("poll-interval", gateway.DefaultPollInterval, "config pull interval")
 		rpcTimeout   = flag.Duration("rpc-timeout", gateway.DefaultRPCTimeout, "single CP RPC timeout")
+		listen       = flag.String("listen", "", "client gRPC address (empty serves diagnostics only)")
 		statusListen = flag.String("status-listen", defaultStatusListen, `HTTP address for /routes and /healthz ("none" disables)`)
 	)
 	flag.Parse()
@@ -79,6 +80,20 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	defer stopStatus()
+
+	var serveErr <-chan error
+	if *listen != "" {
+		listener, err := net.Listen("tcp", *listen)
+		if err != nil {
+			logger.Error("client gRPC listen", "address", *listen, "error", err)
+			os.Exit(1)
+		}
+		done, stopRPC := serveGateway(listener, poller, logger)
+		defer stopRPC()
+		serveErr = done
+		logger.Info("api-gateway client endpoint listening", "address", listener.Addr().String())
+	}
 
 	logger.Info("api-gateway started",
 		"region", *region,
@@ -86,12 +101,43 @@ func main() {
 		"cp_addr", *cpAddr,
 		"poll_interval", poller.Interval.String(),
 	)
-	if err := poller.Run(ctx); err != nil {
-		logger.Error("config poller stopped", "error", err)
-		stopStatus()
+	pollerDone := make(chan error, 1)
+	go func() { pollerDone <- poller.Run(ctx) }()
+	var runErr error
+	select {
+	case runErr = <-pollerDone:
+	case runErr = <-serveErr:
+		stop()
+		<-pollerDone
+	}
+	if runErr != nil && !errors.Is(runErr, grpc.ErrServerStopped) {
+		logger.Error("api-gateway stopped", "error", runErr)
 		os.Exit(1)
 	}
-	stopStatus()
+}
+
+func serveGateway(listener net.Listener, poller *gateway.Poller, logger *slog.Logger) (<-chan error, func()) {
+	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh}
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
+	gatewayv1.RegisterCacheGatewayServer(server, forwarder)
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(listener) }()
+	return done, func() {
+		stopped := make(chan struct{})
+		go func() {
+			server.GracefulStop()
+			close(stopped)
+		}()
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-stopped:
+		case <-timer.C:
+			server.Stop()
+			<-stopped
+		}
+		forwarder.Close()
+	}
 }
 
 // newStatusHandler собирает диагностические эндпоинты routing map.
