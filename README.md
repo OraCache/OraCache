@@ -1,8 +1,60 @@
 # OraCache
 
-Подними три ноды хранилища на ноутбуке и отправляй запросы прямо в любую из них. Для этого стенда не нужны Control Plane, gateway или отдельная база данных.
+## PoC с Control Plane и Gateway
 
-## Запустить кластер
+Локальный стенд: три ноды хранилища в одной группе Raft, Control Plane и API Gateway. Клиент обращается к gateway на `127.0.0.1:28080`.
+
+### Запуск
+
+Из корня репозитория, с Docker Compose:
+
+```sh
+docker compose -f compose.cp.yaml up -d --build
+curl -fsS http://127.0.0.1:9466/routes
+```
+
+Стенд готов, когда в `read_routes` и `write_routes` есть маршрут для партиции `0`. Логи: `docker compose -f compose.cp.yaml logs --tail=50`.
+
+### Запросы через gateway
+
+Для CLI нужен Go 1.27.3.
+
+```sh
+export ORACACHE_ENDPOINT=127.0.0.1:28080
+go run ./cmd/oracache put demo:key hello  # PUT_STATUS_OK
+go run ./cmd/oracache get demo:key        # GET_STATUS_HIT
+go run ./cmd/oracache delete demo:key     # DELETE_STATUS_DELETED
+go run ./cmd/oracache get demo:key        # GET_STATUS_MISS
+```
+
+### Остановка
+
+```sh
+docker compose -f compose.cp.yaml down
+```
+
+Данные хранятся в памяти. Для чистого запуска пересоздаётся вся группа: перезапуск одной ноды с пустым состоянием под тем же ID не поддерживается.
+
+### Проверить смену лидера
+
+Тест сам поднимает стенд на свободных локальных портах, отключает доступ к Control Plane и останавливает лидера. Он проверяет, что через тот же адрес gateway можно прочитать ранее записанное значение и, после восстановления маршрута, снова записать данные. Для `-race` нужны cgo и C-компилятор.
+
+```sh
+GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
+  -run '^TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss$'
+```
+
+`make test-e2e` дополнительно запускает стенд в Docker и проверяет чтение и запись через тот же gateway после остановки контейнера лидера. Тест сам поднимает и удаляет свой Compose-проект.
+
+Правила маршрутизации и повторов описаны в [ADR-004](docs/ADR-004-cp-raft-gateway-routing.md).
+
+---
+
+## PoC без Control Plane
+
+В этом варианте Docker Compose запускает только три `storage-node`. Клиент обращается напрямую к нодам.
+
+### Запустить кластер
 
 Нужны запущенный Docker с Compose и **Go 1.27.3** для клиентской команды и тестов. Все команды ниже запускай из корня репозитория.
 
@@ -13,7 +65,7 @@ docker compose -f compose.storage.yaml ps
 
 Должны запуститься `node-1`, `node-2` и `node-3`. Их клиентские адреса: `127.0.0.1:28091`, `127.0.0.1:28092`, `127.0.0.1:28093` соответственно. Порты доступны только с твоего компьютера. Если нода не запустилась, посмотри `docker compose -f compose.storage.yaml logs --tail=50`.
 
-## Отправить запросы
+### Отправить запросы
 
 Сначала найди лидера. Номер ноды заранее неизвестен, а запись и чтение по умолчанию работают только через лидера:
 
@@ -38,7 +90,7 @@ go run ./cmd/oracache get demo:key       # GET_STATUS_MISS
 
 Чтобы почитать с реплики, останови весь стенд командой ниже и запусти его заново с `ORACACHE_STORAGE_READ_MODE=local docker compose -f compose.storage.yaml up -d --build`. Попробуй `put demo:key hello` на трёх адресах, пока один не вернёт `PUT_STATUS_OK`: запись по-прежнему принимает только лидер, а `get` в этом режиме его не определяет. Затем выполни `get demo:key` на другом порту. Ожидается `GET_STATUS_HIT`; сразу после записи реплика может ещё вернуть `GET_STATUS_MISS`, тогда повтори чтение.
 
-## Остановить стенд
+### Остановить стенд
 
 ```sh
 docker compose -f compose.storage.yaml down
@@ -46,7 +98,7 @@ docker compose -f compose.storage.yaml down
 
 Данные хранятся в памяти и при остановке всего стенда пропадают. Чтобы начать с чистого листа, останови и подними весь стенд заново. Не перезапускай одну остановленную ноду под тем же ID, пока остальные работают.
 
-## Запустить тесты
+### Запустить тесты
 
 Для `make`-команд нужен Make, для тестов с `-race` — включённый cgo и C-компилятор.
 
@@ -56,7 +108,7 @@ go test -race -count=1 -v ./internal/node -run '^TestStandaloneStorageCluster$'
 make test-e2e
 ```
 
-`make test` запускает обычные тесты без Docker. Сквозной тест трёх нод тоже не требует Docker: он сам запускает ноды и проверяет репликацию, чтение и запись после смены лидера. `make test-e2e` проверяет локальный кэш без Raft, а не кластер. Для ручной проверки Docker-стенда пройди сценарий `put → get → delete → get` выше.
+`make test` запускает обычные тесты без Docker. Сквозной тест трёх нод тоже не требует Docker: он проверяет репликацию, чтение и запись после смены лидера. `make test-e2e` проверяет два других стенда: локальный кэш без Raft и PoC с Control Plane. Для ручной проверки этого Docker-стенда подходит сценарий `put → get → delete → get` выше.
 
 ---
 
@@ -210,180 +262,13 @@ Go клиент и интерфейс сервера находятся в `gen/
 через `grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16 << 20))`. Этот
 транспортный лимит независим от доменных лимитов payload и размера batch.
 
-## Control Plane Phase 1 (target code)
-
-Целевой Control Plane реализован отдельно от legacy-кеша и не меняет контракт
-`proto/cache/*`:
-
-- `proto/controlplane/v1/controlplane.proto` — `ControlPlaneAPI`
-  (`ReportHeartbeat`, `GetConfig`). Assignments регион-скоупные:
-  `(region, partition_id)` — отдельная локальная Raft-группа, у master и slave
-  независимые лидеры. Конфиг версионирован (`config_revision`/`known_revision`):
-  Storage Node получает тело только при новой revision. Gateway получает
-  live-view и при прежней revision. В live-view assignment содержит
-  `ready/readable/writable` по текущему лидеру: write — только master-регион
-  с готовым лидером, read — готовый лидер для strict-чтения.
-- `internal/statestore` — граница `Store`; `MemoryStore` — временная Phase 1
-  реализация без etcd (TODO и ADR-001). `LiveConfig` строит live-view с TTL.
-- `internal/cpapi` — stateless gRPC API: принимает heartbeat, отдаёт snapshot
-  и live-view. Liveness считается по TTL. При выборе маршрута учитываются
-  только свежие отчёты назначенных реплик о собственном лидерстве. Если
-  две реплики заявляют лидерство в одном максимальном term, партиция
-  считается неготовой. Placement задаётся статической конфигурацией.
-- `internal/cpagent` — встроенный модуль `oracache-node`, не сайдкар:
-  heartbeat раз в 5 с, config pull раз в 10 с и немедленный pull, если
-  heartbeat вернул новую revision. Ошибки CP логируются и ретраятся; Data
-  Plane продолжает работать по last-known-good.
-- `internal/gateway` — target Router/Poller: `hash(key) % P` через xxhash64,
-  локальный лидер для GET и лидер master-региона для PUT, атомарная подмена
-  routing map. `ApplyView` принимает live-view при той же revision и проверяет
-  `ready/readable/writable` конкретной партиции; мёртвые и not-ready ноды и
-  партиции не маршрутизируются. Legacy `cmd/gateway`/`internal/cache` не
-  затронуты.
-- `internal/partition` — стабильный xxhash64, fixed partition mapping и
-  парсер спецификаций партиций (`all`/`even`/`odd`/`1-9`/`0,2,5-9`).
-- `internal/cpmetrics` — реестр метрик CP в формате Prometheus text exposition
-  без внешних зависимостей.
-- `cmd/cp-api` — plaintext gRPC сервер CP API: `-listen`, `-node-ttl`,
-  `-metrics-listen` и `-config`/`-dev-cluster`.
-- `cmd/oracache-node` — PoC Storage Node: heartbeat-источник со статической
-  топологией внутри шарда; локальные partition-группы отдаёт по HTTP.
-- `cmd/api-gateway` — PoC target Gateway: тянет состав кластера из CP и держит
-  routing map, который отдаёт по HTTP `/routes`.
-
-```sh
-make build
-
-# Вариант 1: синтетический кластер (2 региона × 2 ноды × 128 партиций)
-./bin/cp-api -dev-cluster -listen 127.0.0.1:50052 -node-ttl 15s
-
-# Вариант 2: свой bootstrap JSON
-./bin/cp-api -listen 127.0.0.1:50052 -config /path/to/cp.json
-```
-
-Формат JSON — `revision`, `partition_count`, `regions`, `nodes`, `partitions`;
-роль региона — `master`/`slave`. Валидация требует ровно один master-регион,
-полный набор assignments для каждого объявленного региона и лидера внутри его
-реплик. Пример с уменьшенным числом партиций —
-[`configs/cp-dev.json`](configs/cp-dev.json).
-
-### Локальный сценарий control plane
-
-Четыре команды дают полный PoC из задачи #35: ноды шлют heartbeat, gateway
-периодически забирает состав и знает, куда маршрутизировать.
-
-```sh
-# 1. CP API. node-ttl задаёт TTL liveness; интервал heartbeat нод по
-#    умолчанию 5 с, поэтому TTL должен быть больше него.
-./bin/cp-api -dev-cluster -listen 127.0.0.1:50052 -node-ttl 15s
-
-# 2. Две ноды: каждая держит все партиции региона и лидирует в своей половине.
-#    -status-listen обязателен разным у каждой ноды: дефолт общий.
-./bin/oracache-node -node-id eu-1 -region eu -status-listen 127.0.0.1:9465 \
-  -partitions all -leader-partitions even -heartbeat-interval 1s
-./bin/oracache-node -node-id eu-2 -region eu -status-listen 127.0.0.1:9467 \
-  -partitions all -leader-partitions odd  -heartbeat-interval 1s
-
-# 3. Gateway тянет live-view и держит routing map.
-./bin/api-gateway -region eu -node-id gw-eu-1 -poll-interval 2s
-```
-
-Проверка:
-
-```sh
-# Локальные partition-группы ноды (128 групп, роль и готовность).
-curl localhost:9465/partitions
-
-# Routing map gateway: 128 read/write маршрутов, лидеры чередуются.
-curl localhost:9466/routes
-
-# Метрики CP: heartbeat, config pull, live-ноды по состояниям.
-curl localhost:9464/metrics | grep oracache_cp_
-```
-
-Отказ ноды: после остановки `eu-1` и истечения TTL маршруты партиций, где она
-лидер, исчезают (`read_routes` становится меньше 128), а `config_revision`
-**не меняется** — liveness не создаёт новую revision конфигурации.
-
-Спецификации партиций: `all`, `even`, `odd`, `1-9`, `0,2,5-9` и их список.
-Флаг `-heartbeat-interval` фиксирует интервал и имеет приоритет над
-подсказкой CP API; без него агент следует подсказке (по умолчанию 5 с).
-
-**Рестарт CP API.** Пока сервер собирает первые heartbeat от назначенных
-реплик, Gateway с той же ревизией сохраняет последнюю карту. Это окно
-закрывается после получения heartbeat от всех назначенных реплик вне drain
-или по истечении `-node-ttl` с запуска CP (по умолчанию 15 с). Gateway без карты
-или с более старой ревизией сразу получает доступный live-view.
-
-В этом режиме heartbeat и карта хранятся в памяти. `oracache-node` публикует
-заданные флагами статусы, а `api-gateway` показывает подтверждённых лидеров
-через `/routes`.
-
-Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
-контракт CP API, TTL/liveness, выбор лидера среди назначенных реплик, циклы
-агента и сохранение маршрута при рестарте CP через loopback gRPC.
-
-### Control Plane и Gateway на реальном Raft
-
-Сценарий использует одну локальную Raft-группу из трёх `storage-node`.
-Агент считывает реальные статусы Raft. С флагом `-listen` API Gateway
-принимает клиентские RPC и пересылает их готовым репликам.
-Резервные попытки ограничены по времени и числу запросов. Если нода ответила
-`NOT_LEADER`, Gateway проверяет адрес подсказки по принятой карте и запрашивает
-обновление карты в фоне. Записи с неизвестным результатом клиенту возвращаются
-с исходной ошибкой.
-
-В первом терминале:
-
-```sh
-make build
-./bin/cp-api -config configs/cp-raft-local.json -listen 127.0.0.1:28081
-```
-
-Во втором терминале, из корня репозитория:
-
-```bash
-peers=(
-  -peer=1,node-1,127.0.0.1:28091,http://127.0.0.1:28191/raft
-  -peer=2,node-2,127.0.0.1:28092,http://127.0.0.1:28192/raft
-  -peer=3,node-3,127.0.0.1:28093,http://127.0.0.1:28193/raft
-)
-for i in 1 2 3; do
-  ./bin/storage-node -node-id="node-$i" -peer-id="$i" -cp-addr=127.0.0.1:28081 \
-    -heartbeat-interval=1s -grpc-listen="127.0.0.1:2809$i" \
-    -raft-listen="127.0.0.1:2819$i" "${peers[@]}" &
-done
-wait
-```
-
-В третьем терминале:
-
-```sh
-./bin/api-gateway -region region-a -node-id gw-local -cp-addr 127.0.0.1:28081 \
-  -listen 127.0.0.1:28080 -poll-interval 1s
-```
-
-После появления маршрута партиции `0` в `curl -s localhost:9466/routes`:
-
-```sh
-export ORACACHE_ENDPOINT=127.0.0.1:28080
-./bin/oracache put profile:1 hello --expected-rev 0
-./bin/oracache get profile:1
-GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
-  -run '^TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss$'
-```
-
-Стенд использует локальные порты, открытый gRPC и Store/Raft в памяти.
-Для повторного ручного запуска пересоздайте все три ноды вместе.
-Политика выбора маршрута описана в [ADR-004](docs/ADR-004-cp-raft-gateway-routing.md).
-
 ## Go workspace и модули
 
 В корне закоммичен `go.work` (Go 1.27.3), объединяющий четыре модуля:
 
 | Каталог | Module path | Назначение |
 | --- | --- | --- |
-| `.` | `github.com/OraCache/oracache` | gateway и in-memory кеш |
+| `.` | `github.com/OraCache/oracache` | Control Plane, gateway, хранилище и Raft |
 | `gen` | `github.com/OraCache/oracache/gen` | сгенерированные protobuf/gRPC API |
 | `cmd/oracache` | `github.com/OraCache/oracache/cmd/oracache` | CLI и Kong |
 | `integration/e2e` | `github.com/OraCache/oracache/integration/e2e` | Docker/Compose и testcontainers |
@@ -402,8 +287,8 @@ Make запускает тесты и vet каждого модуля с `GOWORK
 ## Проверки и генерация
 
 ```sh
-make build                # bin/gateway и bin/oracache
-make test                 # gateway + protobuf + CLI, -race, без Docker
+make build                # в том числе cp-api, storage-node, api-gateway и oracache
+make test                 # корневой модуль, protobuf и CLI, -race, без Docker
 make test-gateway         # только корневой модуль
 make test-protobuf        # компиляция API; сейчас нет test cases
 make test-cli             # CLI, включая настоящий localhost gRPC
@@ -423,7 +308,7 @@ git diff --exit-code -- gen
 бинарник и Go-кеши. В консоли видны имена тестов, PASS/FAIL и итог.
 Ненулевой код `go test` сохраняется через gotestsum и Make.
 JUnit-файлы: `.reports/gateway.xml`, `.reports/protobuf.xml`,
-`.reports/cli.xml`, `.reports/e2e.xml`; каталог игнорируется git.
+`.reports/cli.xml`, `.reports/e2e.xml`, `.reports/e2e-cp.xml`; каталог игнорируется git.
 Перед запуском target удаляет свой старый отчёт, а `make test` — все три
 обычных отчёта ещё до установки инструмента. Если запуск оборвался до
 создания XML, отчёта нет: это не означает «0 тестов успешно».
