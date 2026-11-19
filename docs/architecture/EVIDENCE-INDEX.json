@@ -1,0 +1,92 @@
+[
+  {
+    "evidence_id": "E-001",
+    "title": "Cache-aside: продуктовый контракт",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-002",
+    "title": "Single write-region: предметное согласие, не отказные гарантии",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-003",
+    "title": "RF3 и одинаковые pod; sizing отдельно",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-004",
+    "title": "Рамка PoC отдельно от исторических MVP",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-005",
+    "title": "Версии и Get/Delete: намерение и контрсвидетельства",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-006",
+    "title": "As-built API: нет history list; Delete открывает предыдущую",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-007",
+    "title": "TTL всех версий и неутверждённое ослабление asyncTouch",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-008",
+    "title": "Гонки: отвергнутые предусловия и открытые варианты",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-009",
+    "title": "Lease, operationID и неоднозначный retry",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-010",
+    "title": "Топология и безопасный membership: направление и границы",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-011",
+    "title": "Региональный поток: предложение протокола; async outbox подтверждён отдельно",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-012",
+    "title": "CP/Gateway и процессы: роли и открытая authority",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-013",
+    "title": "Cold warmup и durable recovery: требование отдельно от кода",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-014",
+    "title": "Наблюдаемость, ресурсы и неизвестные численные пороги",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-015",
+    "title": "Историческое исполнение integration/poc; не новый CI",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-016",
+    "title": "Свежий fork CI: предоставленное ранее проверенное свидетельство",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-017",
+    "title": "Текущее уточнение: принятые механизмы и открытый CP/discovery",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-018",
+    "title": "Эксперимент статического CP: срезы и унаследованные проверки",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  }
+]
