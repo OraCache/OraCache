@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -39,9 +40,18 @@ func TestControlPlaneGatewayFailover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	project := "oracache-cp-e2e-" + uuid.NewString()
+	image := os.Getenv("ORACACHE_CP_IMAGE")
+	removeImages := compose.RemoveImagesLocal
+	if image == "" {
+		image = project + ":local"
+		removeImages = compose.RemoveImagesAll
+	} else if _, _, err := docker.ImageInspectWithRaw(ctx, image); err != nil {
+		t.Fatalf("prebuilt ORACACHE_CP_IMAGE %q required: %v", image, err)
+	}
 	stack, err := compose.NewDockerComposeWith(
 		compose.WithStackFiles(manifest),
-		compose.StackIdentifier("oracache-cp-e2e-"+uuid.NewString()),
+		compose.StackIdentifier(project),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -49,11 +59,13 @@ func TestControlPlaneGatewayFailover(t *testing.T) {
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		if err := stack.Down(cleanup, compose.RemoveVolumes(true), compose.RemoveImagesLocal); err != nil {
+		if err := stack.Down(cleanup, compose.RemoveVolumes(true), removeImages); err != nil {
 			t.Errorf("compose down: %v", err)
 		}
 	})
-	if err := stack.WithEnv(map[string]string{"ORACACHE_CP_PORT": "0", "ORACACHE_CP_STATUS_PORT": "0"}).
+	if err := stack.WithEnv(map[string]string{
+		"ORACACHE_CP_IMAGE": image, "ORACACHE_CP_PORT": "0", "ORACACHE_CP_STATUS_PORT": "0",
+	}).
 		Up(ctx, compose.Wait(true)); err != nil {
 		t.Fatalf("compose up: %v", err)
 	}

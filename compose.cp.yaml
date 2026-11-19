@@ -1,6 +1,7 @@
 name: oracache-cp
 
 x-image: &image
+  image: ${ORACACHE_CP_IMAGE:-oracache-cp:local}
   build:
     context: .
     dockerfile: Dockerfile.cp
