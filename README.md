@@ -2,63 +2,38 @@
 
 ## PoC с Control Plane и Gateway
 
-Подними три `storage-node` в одном регионе и отправь запросы через `api-gateway`. Ноды сами выбирают лидера Raft и сообщают о нём Control Plane (`cp-api`). Клиенту нужен только адрес gateway.
+Локальный стенд: три ноды хранилища в одной группе Raft, Control Plane и API Gateway. Клиент обращается к gateway на `127.0.0.1:28080`.
 
-### Запустить стенд
+### Запуск
 
-Нужны Go 1.27.3, Make, Bash и `curl`. Docker не нужен. Все команды запускай из корня репозитория; первые три терминала оставь открытыми.
-
-**Терминал 1: собрать бинарники и запустить Control Plane.**
+Из корня репозитория, с Docker Compose:
 
 ```sh
-make build
-./bin/cp-api -config configs/cp-raft-local.json -listen 127.0.0.1:28081
+docker compose -f compose.cp.yaml up -d --build
+curl -fsS http://127.0.0.1:9466/routes
 ```
 
-**Терминал 2 (Bash): запустить три ноды.**
+Стенд готов, когда в `read_routes` и `write_routes` есть маршрут для партиции `0`. Логи: `docker compose -f compose.cp.yaml logs --tail=50`.
 
-```bash
-(
-  peers=(
-    -peer=1,node-1,127.0.0.1:28091,http://127.0.0.1:28191/raft
-    -peer=2,node-2,127.0.0.1:28092,http://127.0.0.1:28192/raft
-    -peer=3,node-3,127.0.0.1:28093,http://127.0.0.1:28193/raft
-  )
-  pids=()
-  trap 'kill "${pids[@]}" 2>/dev/null; wait' EXIT
-  trap 'exit 0' INT TERM
-  for i in 1 2 3; do
-    ./bin/storage-node -node-id="node-$i" -peer-id="$i" -cp-addr=127.0.0.1:28081 \
-      -heartbeat-interval=1s -grpc-listen="127.0.0.1:2809$i" \
-      -raft-listen="127.0.0.1:2819$i" "${peers[@]}" &
-    pids+=("$!")
-  done
-  wait
-)
-```
+### Запросы через gateway
 
-**Терминал 3: запустить gateway.** Без `-listen` он отдаёт только диагностику, а не принимает клиентские запросы.
-
-```sh
-./bin/api-gateway -region region-a -node-id gw-local -cp-addr 127.0.0.1:28081 \
-  -listen 127.0.0.1:28080 -poll-interval 1s
-```
-
-### Отправить запросы
-
-В четвёртом терминале посмотри `curl -fsS http://127.0.0.1:9466/routes`. Когда в `read_routes` и `write_routes` появится партиция `0`, можно отправлять запросы. Если карты пока пустые, подожди пару секунд и повтори. Если маршрута всё ещё нет, проверь логи нод, `cp-api` и gateway.
+Для CLI нужен Go 1.27.3.
 
 ```sh
 export ORACACHE_ENDPOINT=127.0.0.1:28080
-./bin/oracache put demo:key hello  # PUT_STATUS_OK
-./bin/oracache get demo:key        # GET_STATUS_HIT, data: aGVsbG8= (hello в base64)
-./bin/oracache delete demo:key     # DELETE_STATUS_DELETED
-./bin/oracache get demo:key        # GET_STATUS_MISS
+go run ./cmd/oracache put demo:key hello  # PUT_STATUS_OK
+go run ./cmd/oracache get demo:key        # GET_STATUS_HIT
+go run ./cmd/oracache delete demo:key     # DELETE_STATUS_DELETED
+go run ./cmd/oracache get demo:key        # GET_STATUS_MISS
 ```
 
-### Остановить стенд
+### Остановка
 
-Нажми `Ctrl+C` в терминалах с gateway, нодами и Control Plane. Данные Raft и отчёты нод в Control Plane хранятся в памяти. Для нового прогона поднимай всю группу заново; не возвращай одну ноду с пустым состоянием под тем же ID в работающую группу. Стенд слушает только `127.0.0.1` и работает без TLS и аутентификации.
+```sh
+docker compose -f compose.cp.yaml down
+```
+
+Данные хранятся в памяти. Для чистого запуска пересоздаётся вся группа: перезапуск одной ноды с пустым состоянием под тем же ID не поддерживается.
 
 ### Проверить смену лидера
 
@@ -75,7 +50,7 @@ GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
 
 ## PoC без Control Plane
 
-Если хочешь проверить только хранилище и Raft, подними три `storage-node` в Docker Compose и отправляй запросы напрямую в ноды.
+В этом варианте Docker Compose запускает только три `storage-node`. Клиент обращается напрямую к нодам.
 
 ### Запустить кластер
 

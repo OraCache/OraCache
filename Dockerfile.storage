@@ -5,8 +5,10 @@ ENV GOWORK=off
 COPY go.mod go.sum ./
 COPY gen/go.mod gen/go.sum ./gen/
 RUN go mod download
-COPY gen/gateway ./gen/gateway
+COPY gen ./gen
 COPY cmd/storage-node ./cmd/storage-node
+COPY internal/cpagent ./internal/cpagent
+COPY internal/cpconfig ./internal/cpconfig
 COPY internal/node ./internal/node
 COPY internal/store ./internal/store
 COPY shardraft ./shardraft
