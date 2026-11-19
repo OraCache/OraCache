@@ -52,6 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ORACACHE_GATEWAY_IMAGE: oracache-gateway:ci
+      ORACACHE_CP_IMAGE: oracache-cp:ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -74,6 +75,17 @@ jobs:
           tags: ${{ env.ORACACHE_GATEWAY_IMAGE }}
           cache-from: type=gha,scope=oracache-gateway
           cache-to: type=gha,scope=oracache-gateway,mode=max
+      # Keep the cold image build outside the Testcontainers/Ryuk lifecycle.
+      - name: Build current Control Plane PoC image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.cp
+          push: false
+          load: true
+          tags: ${{ env.ORACACHE_CP_IMAGE }}
+          cache-from: type=gha,scope=oracache-cp
+          cache-to: type=gha,scope=oracache-cp,mode=max
       - name: Protobuf client against Compose gateway
         id: tests
         run: make test-e2e

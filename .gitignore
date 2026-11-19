@@ -3,3 +3,13 @@
 /go.work.sum
 /.reports/
 /tools/__pycache__/
+/output.txt
+
+# Локальные IDE/AI/developer-инструменты; не часть кода проекта
+/.idea/
+/.dsh/
+/AGENTS.md
+/scripts/collect.sh
+
+# Локальные архитектурные доки и AI-заметки
+/docs/architecture/

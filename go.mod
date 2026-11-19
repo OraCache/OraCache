@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	golang.org/x/net v0.26.0 // indirect

@@ -1,7 +1,7 @@
 // Package node is the application layer inside one storage-node process. It
 // wraps the versioned store and one member of the static shard Raft group:
 // config and constructors, the client gRPC API delegating to shardraft, the
-// HTTP Raft transport and lifecycle.
+// HTTP Raft transport, the CP-agent heartbeat and lifecycle.
 //
 // There is deliberately no network hop between Raft and the store: Raft applies
 // committed commands to the store in-process.
@@ -17,22 +17,29 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
+	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	"github.com/OraCache/oracache/internal/cpagent"
+	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/store"
 	"github.com/OraCache/oracache/shardraft"
 	"go.etcd.io/raft/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 // Peer describes one member of the static group. The list is identical on all
 // processes; only Config.PeerID differs.
 type Peer struct {
 	ID         uint64 // Raft ID, nonzero
-	NodeID     string // Storage node ID, e.g. "node-1"
-	ClientAddr string // client gRPC address as reachable by clients (NOT_LEADER hint)
+	NodeID     string // Control Plane node ID, e.g. "node-1"
+	ClientAddr string // client gRPC address as reachable by gateways (NOT_LEADER hint)
 	RaftURL    string // Raft HTTP endpoint as reachable by the other members
 }
 
@@ -50,6 +57,11 @@ type Config struct {
 	RaftAddr     string
 	GRPCListener net.Listener
 	RaftListener net.Listener
+
+	// CPAddr enables the CP agent. Empty disables heartbeats.
+	CPAddr             string
+	HeartbeatInterval  time.Duration
+	ConfigPullInterval time.Duration
 
 	Store store.Config
 
@@ -72,6 +84,8 @@ type Node struct {
 	raftLis  net.Listener
 	httpSrv  *http.Server
 	grpcSrv  *grpc.Server
+	agent    *cpagent.Agent
+	cpConn   *grpc.ClientConn
 	httpCli  *http.Client
 	peerNode map[uint64]string
 	once     sync.Once
@@ -85,6 +99,9 @@ func New(cfg Config) (*Node, error) {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.CPAddr != "" && cfg.ReadMode != shardraft.Linearizable {
+		return nil, errors.New("node: Control Plane integration requires linearizable reads")
 	}
 	n := &Node{cfg: cfg, log: cfg.Logger.With("node", cfg.NodeID), peerNode: map[uint64]string{}}
 
@@ -130,6 +147,27 @@ func New(cfg Config) (*Node, error) {
 		return nil, err
 	}
 
+	if cfg.CPAddr != "" {
+		n.cpConn, err = grpc.NewClient(cfg.CPAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			n.grpcLis.Close()
+			n.raftLis.Close()
+			return nil, fmt.Errorf("node: control plane client: %w", err)
+		}
+		n.agent, err = cpagent.New(cpagent.Options{
+			NodeID: cfg.NodeID, Region: cfg.Region, Instance: cfg.NodeID,
+			Client: controlplanev1.NewControlPlaneAPIClient(n.cpConn), Statuses: n,
+			HeartbeatInterval: cfg.HeartbeatInterval, ConfigPullInterval: cfg.ConfigPullInterval,
+			Logger: n.log,
+		})
+		if err != nil {
+			n.grpcLis.Close()
+			n.raftLis.Close()
+			n.cpConn.Close()
+			return nil, err
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/raft", n.inst.RaftHandler())
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
@@ -137,7 +175,11 @@ func New(cfg Config) (*Node, error) {
 		_ = json.NewEncoder(w).Encode(n.inst.Status())
 	})
 	n.httpSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	n.grpcSrv = grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
+	serverOptions := []grpc.ServerOption{grpc.MaxRecvMsgSize(16 << 20)}
+	if n.agent != nil {
+		serverOptions = append(serverOptions, grpc.UnaryInterceptor(n.requireMasterForWrites))
+	}
+	n.grpcSrv = grpc.NewServer(serverOptions...)
 	pb.RegisterCacheGatewayServer(n.grpcSrv, shardraft.GatewayServer(n.inst))
 	return n, nil
 }
@@ -160,6 +202,58 @@ func (n *Node) Status() shardraft.Status { return n.inst.Status() }
 // mutate it, because only Raft apply may change replicated state.
 func (n *Node) Store() *store.Store { return n.store }
 
+// Read the last accepted topology from memory. Raft still decides whether
+// this node may propose and commit a write.
+func (n *Node) requireMasterForWrites(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	switch info.FullMethod {
+	case pb.CacheGateway_Put_FullMethodName, pb.CacheGateway_BatchPut_FullMethodName, pb.CacheGateway_Delete_FullMethodName:
+		config := n.agent.Config()
+		if config == nil {
+			return nil, status.Error(codes.Unavailable, "storage node has not received its Control Plane configuration")
+		}
+		if config.MasterRegion() != n.cfg.Region {
+			return nil, status.Error(codes.FailedPrecondition, "client writes require the master region")
+		}
+		node, assigned := config.NodeByID(n.cfg.NodeID)
+		assignment, placed := config.Assignment(n.cfg.Region, n.cfg.ShardID)
+		if !assigned || node.Region != n.cfg.Region || node.State == cpconfig.NodeStateDraining ||
+			!placed || !slices.Contains(assignment.ReplicaNodeIDs, n.cfg.NodeID) {
+			return nil, status.Error(codes.FailedPrecondition, "storage node has no active placement for this partition")
+		}
+	}
+	return handler(ctx, req)
+}
+
+// PartitionStatuses implements cpagent.StatusProvider with the actual status.
+func (n *Node) PartitionStatuses(context.Context) ([]*controlplanev1.PartitionStatus, error) {
+	s := n.inst.Status()
+	ps := &controlplanev1.PartitionStatus{
+		PartitionId:  s.ShardID,
+		Role:         protoRole(s.Role),
+		Term:         s.Term,
+		CommitIndex:  s.CommitIndex,
+		AppliedIndex: s.AppliedIndex,
+		Ready:        s.Ready && s.Running && (n.agent == nil || n.agent.Config() != nil),
+	}
+	if s.LeaderID != 0 {
+		ps.LeaderId = n.peerNode[s.LeaderID]
+	}
+	return []*controlplanev1.PartitionStatus{ps}, nil
+}
+
+func protoRole(role string) controlplanev1.RaftRole {
+	switch role {
+	case "StateLeader":
+		return controlplanev1.RaftRole_RAFT_ROLE_LEADER
+	case "StateFollower":
+		return controlplanev1.RaftRole_RAFT_ROLE_FOLLOWER
+	case "StateCandidate", "StatePreCandidate":
+		return controlplanev1.RaftRole_RAFT_ROLE_CANDIDATE
+	default:
+		return controlplanev1.RaftRole_RAFT_ROLE_UNSPECIFIED
+	}
+}
+
 // Run serves until ctx is cancelled or the Raft instance fails fatally, then
 // shuts everything down. It returns the fatal error, if any. Run may be called
 // once; a stopped node is never restarted into the group (no persistence).
@@ -173,6 +267,10 @@ func (n *Node) Run(ctx context.Context) error {
 	serveErr := make(chan error, 2)
 	go func() { serveErr <- n.grpcSrv.Serve(n.grpcLis) }()
 	go func() { serveErr <- n.httpSrv.Serve(n.raftLis) }()
+	if n.agent != nil {
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = n.agent.Run(ctx) }()
+	}
 	n.log.Info("storage node started", "grpc", n.GRPCAddr(), "raft", n.RaftAddr(), "peer_id", n.cfg.PeerID)
 
 	var runErr error
@@ -213,5 +311,8 @@ func (n *Node) shutdown() {
 		_ = n.grpcLis.Close() // matters only if Run never started
 		_ = n.raftLis.Close()
 		n.httpCli.CloseIdleConnections()
+		if n.cpConn != nil {
+			_ = n.cpConn.Close()
+		}
 	})
 }
