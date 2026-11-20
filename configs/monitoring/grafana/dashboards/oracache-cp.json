@@ -1,0 +1,234 @@
+{
+  "uid": "oracache-cp-monitoring",
+  "title": "OraCache · Control Plane и Gateway",
+  "schemaVersion": 41,
+  "refresh": "5s",
+  "time": {
+    "from": "now-5m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Control Plane · сбор метрик",
+      "description": "Последний scrape: 1 — доступен, 0 — недоступен. При отсутствии серии — нет данных.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Недоступен",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Доступен",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"cp-api\"}",
+          "legendFormat": "Control Plane",
+          "editorMode": "code",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Gateway · сбор метрик",
+      "description": "Последний scrape: 1 — доступен, 0 — недоступен. При отсутствии серии — нет данных.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Недоступен",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Доступен",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"api-gateway\"}",
+          "legendFormat": "Gateway",
+          "editorMode": "code",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Возраст heartbeat",
+      "description": "Время с последнего heartbeat, принятого Control Plane. TTL ноды на стенде — 15 с.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "oracache_cp_heartbeat_age_seconds{job=\"cp-api\"}",
+          "legendFormat": "{{region}} / {{node_id}}",
+          "editorMode": "code",
+          "instant": false,
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Партиции без маршрута · GET",
+      "description": "Число партиций без маршрута в текущей карте Gateway. До загрузки карты серия отсутствует.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "max": 128,
+          "custom": {
+            "spanNulls": false,
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "oracache_gateway_partitions_without_route{job=\"api-gateway\",operation=\"get\"}",
+          "legendFormat": "GET",
+          "editorMode": "code",
+          "instant": false,
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Партиции без маршрута · PUT",
+      "description": "Число партиций без маршрута в текущей карте Gateway. До загрузки карты серия отсутствует.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "max": 128,
+          "custom": {
+            "spanNulls": false,
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "oracache_gateway_partitions_without_route{job=\"api-gateway\",operation=\"put\"}",
+          "legendFormat": "PUT",
+          "editorMode": "code",
+          "instant": false,
+          "range": true
+        }
+      ]
+    }
+  ]
+}
