@@ -27,6 +27,26 @@ go run ./cmd/oracache delete demo:key     # DELETE_STATUS_DELETED
 go run ./cmd/oracache get demo:key        # GET_STATUS_MISS
 ```
 
+### Метрики Control Plane и Gateway
+
+Gateway отдаёт `oracache_gateway_partitions_without_route{operation}` на
+`/metrics` рядом с `/routes`.
+
+```sh
+curl -fsS http://127.0.0.1:9466/metrics
+```
+
+После первой карты метрика показывает, для скольких партиций Gateway не
+получил маршрут на чтение или запись. Ноль означает полное покрытие карты.
+При смене лидера карта может временно потерять маршрут, даже если Raft
+позже успешно продолжит работу без смены `config_revision`.
+
+При отдельном запуске `cp-api` метрика
+`oracache_cp_heartbeat_age_seconds{region,node_id}` доступна на
+`127.0.0.1:9464/metrics` по умолчанию. После истечения TTL она остаётся
+видимой, пока пара нода–регион есть в конфигурации. В `compose.cp.yaml`
+порт метрик CP отключён.
+
 ### Остановка
 
 ```sh

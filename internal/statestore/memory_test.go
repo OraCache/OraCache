@@ -3,6 +3,7 @@ package statestore_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -97,6 +98,59 @@ func TestHeartbeatDoesNotChangeConfigRevision(t *testing.T) {
 	if snapshot.Revision != 3 {
 		t.Fatalf("config revision changed to %d by heartbeat", snapshot.Revision)
 	}
+}
+
+func TestHeartbeatReceiptsTrackOnlyConfiguredNodeRegions(t *testing.T) {
+	t.Parallel()
+	store := statestore.NewMemory()
+	ctx := context.Background()
+	const nodeID = "extra"
+	first := time.Unix(200, 0)
+	apply := func(revision uint64, region string) {
+		t.Helper()
+		cfg := cpconfigtest.Config(revision)
+		if region != "" {
+			cfg.Nodes = append(cfg.Nodes, cpconfig.Node{ID: nodeID, Region: region, Address: "10.0.0.3:7000"})
+		}
+		if err := store.ApplyConfig(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	beat := func(region string, receivedAt time.Time) {
+		t.Helper()
+		hb := statestore.Heartbeat{NodeID: nodeID, Region: region, ReceivedAt: receivedAt}
+		if _, err := store.UpsertHeartbeat(ctx, hb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertReceipts := func(want ...statestore.HeartbeatReceipt) {
+		t.Helper()
+		got, err := store.HeartbeatReceipts(ctx)
+		if err != nil || !slices.Equal(got, want) {
+			t.Fatalf("HeartbeatReceipts = %v, %v; want %v", got, err, want)
+		}
+	}
+
+	beat("eu", first)
+	apply(1, "eu")
+	assertReceipts()
+
+	second := first.Add(time.Second)
+	beat("eu", second)
+	beat("us", second.Add(time.Second))
+	apply(2, "eu")
+	assertReceipts(statestore.HeartbeatReceipt{NodeID: nodeID, Region: "eu", ReceivedAt: second})
+
+	apply(3, "us")
+	assertReceipts()
+	apply(4, "eu")
+	assertReceipts()
+
+	beat("eu", first.Add(4*time.Second))
+	apply(5, "")
+	assertReceipts()
+	apply(6, "eu")
+	assertReceipts()
 }
 
 func TestHeartbeatInputAndOutputAreCopied(t *testing.T) {

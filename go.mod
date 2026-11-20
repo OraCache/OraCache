@@ -4,6 +4,8 @@ go 1.27.3
 
 require (
 	github.com/OraCache/oracache/gen v0.0.0
+	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/prometheus/common v0.44.0
 	go.etcd.io/raft/v3 v3.6.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237
 	google.golang.org/grpc v1.64.1
@@ -11,9 +13,10 @@ require (
 )
 
 require (
-	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
+	github.com/prometheus/client_model v0.4.0 // indirect
 	golang.org/x/net v0.26.0 // indirect
 	golang.org/x/sys v0.21.0 // indirect
 	golang.org/x/text v0.16.0 // indirect
