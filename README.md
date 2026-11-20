@@ -68,6 +68,52 @@ GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
 
 Правила маршрутизации и повторов описаны в [ADR-004](docs/ADR-004-cp-raft-gateway-routing.md).
 
+### CP API с etcd
+
+Поднимите отдельный локальный etcd и укажите его endpoint при запуске CP API.
+Docker выделит свободный порт на loopback, а volume сохранит данные etcd.
+
+```sh
+make build
+docker run -d --name oracache-cp-etcd-local \
+  -p 127.0.0.1::2379 -v oracache-cp-etcd-local:/etcd-data \
+  quay.io/coreos/etcd:v3.6.16 /usr/local/bin/etcd \
+  --listen-client-urls http://0.0.0.0:2379 \
+  --advertise-client-urls http://127.0.0.1:2379 --data-dir /etcd-data
+docker exec oracache-cp-etcd-local etcdctl endpoint health
+./bin/cp-api -store etcd \
+  -etcd-endpoints "http://$(docker port oracache-cp-etcd-local 2379/tcp)" \
+  -listen 127.0.0.1:50052 -node-ttl 15s -dev-cluster
+```
+
+Дождитесь успешного `endpoint health` перед запуском CP API. Для проверки на реальных Raft-репликах используйте адреса нод из вашей
+топологии. Для своего bootstrap передайте `-config путь-к-конфигурации`
+вместо `-dev-cluster` и настройте ноды на
+партиции из этого файла.
+
+- `-etcd-endpoints` принимает список endpoint через запятую. `-etcd-prefix`
+  задаёт пространство ключей, по умолчанию `/oracache`. Экземпляры CP API
+  одного кластера используют одинаковые prefix и `-node-ttl`.
+- Bootstrap создаёт снимок только в пустом namespace. При рестарте CP API
+  читает уже опубликованный снимок и его ревизию из etcd, даже если передан
+  другой bootstrap-файл.
+- Каждый heartbeat сохраняет статус с новым lease. etcd принимает TTL в целых
+  секундах, поэтому дробная часть округляется вверх. При истечении lease
+  Gateway получает недоступную реплику с прежней `config_revision`. Метрика
+  возраста heartbeat сохраняется, пока пара нода–регион есть в топологии.
+- При отказе etcd работающий CP API возвращает gRPC `Unavailable` на
+  heartbeat и config pull. Gateway сохраняет последнюю принятую карту.
+
+Интеграционный тест поднимает свой контейнер с отдельным портом, проверяет
+рестарт CP, конкурентную публикацию и истечение lease, затем останавливает
+контейнер для проверки Gateway.
+
+```sh
+GOWORK=off go test -race -tags=integration -count=1 -v ./cmd/cp-api -run '^TestEtcdControlPlane$'
+```
+
+[ADR-003 — схема StateStore в etcd](docs/ADR-003-cp-etcd-store.md).
+
 ---
 
 ## PoC без Control Plane

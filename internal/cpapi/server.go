@@ -133,7 +133,8 @@ func (s *Server) Metrics() *cpmetrics.Metrics { return s.metrics }
 func (s *Server) heartbeatAges(ctx context.Context) ([]cpmetrics.GaugeSample, error) {
 	receipts, err := s.store.HeartbeatReceipts(ctx)
 	if err != nil {
-		return nil, err
+		s.log.WarnContext(ctx, "heartbeat age collection failed", "error", err)
+		return nil, nil // Keep the process-local RPC outcome metrics available.
 	}
 	now := s.clock.Now()
 	samples := make([]cpmetrics.GaugeSample, 0, len(receipts))

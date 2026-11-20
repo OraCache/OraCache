@@ -11,11 +11,7 @@ import (
 
 // MemoryStore — in-memory Store для CP Phase 1 и тестов.
 //
-// Он не durable: рестарт CP API теряет heartbeat и последний config snapshot.
-// В production должен использоваться etcd-backed StateStore, описанный в
-// docs/architecture/ARCHITECTURE.md §7.1.
-//
-// TODO(phase-3): заменить на etcd-backed Store, сохранив стабильную границу API.
+// Рестарт CP API теряет heartbeat и последний config snapshot.
 type MemoryStore struct {
 	mu         sync.RWMutex
 	heartbeats map[string]Heartbeat
@@ -115,13 +111,8 @@ func (s *MemoryStore) ApplyConfig(ctx context.Context, config *cpconfig.Config) 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.snapshot.Config != nil {
-		if config.Revision <= s.snapshot.Revision {
-			return fmt.Errorf("%w: have %d, got %d", cpconfig.ErrStaleRevision, s.snapshot.Revision, config.Revision)
-		}
-		if config.PartitionCount != s.snapshot.Config.PartitionCount {
-			return fmt.Errorf("%w: have %d, got %d", cpconfig.ErrPartitionCountChanged, s.snapshot.Config.PartitionCount, config.PartitionCount)
-		}
+	if err := validateConfigTransition(s.snapshot, config); err != nil {
+		return err
 	}
 	// Keep receipt times only for pairs present in both configurations.
 	receipts := make(map[heartbeatSource]heartbeatReceiptTime, len(config.Nodes))

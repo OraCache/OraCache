@@ -1,8 +1,7 @@
 // cp-api обслуживает stateless API Control Plane по plaintext gRPC.
 //
-// В Phase 1 состояние хранится в памяти. В production его заменит etcd за той же
-// границей statestore.Store; см.
-// docs/architecture/ADR-001-cp-phase1-in-memory-store.md.
+// По умолчанию используется in-memory PoC. Для общего состояния CP API
+// поддерживает etcd за той же границей statestore.Store.
 //
 // Метрики Control Plane отдаются отдельным HTTP-портом в формате Prometheus
 // text exposition. Пустая строка в -metrics-listen отключает endpoint.
@@ -18,10 +17,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	"github.com/OraCache/oracache/internal/cpapi"
-	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/statestore"
 	"google.golang.org/grpc"
 )
@@ -62,10 +61,14 @@ func serveMetrics(listen string, api *cpapi.Server, logger *slog.Logger) error {
 }
 
 func main() {
+	var options storeOptions
+	flag.StringVar(&options.backend, "store", "memory", "StateStore backend: memory or etcd")
+	flag.StringVar(&options.endpoints, "etcd-endpoints", "http://127.0.0.1:2379", "comma-separated etcd endpoints (-store etcd)")
+	flag.StringVar(&options.prefix, "etcd-prefix", "/oracache", "etcd namespace (-store etcd)")
+	flag.StringVar(&options.configPath, "config", "", "JSON snapshot for an empty store")
+	flag.DurationVar(&options.nodeTTL, "node-ttl", cpapi.DefaultNodeTTL, "node liveness TTL without heartbeat")
+	flag.BoolVar(&options.devCluster, "dev-cluster", false, "bootstrap a synthetic 2-region, 2-node-per-region, 128-partition cluster")
 	listen := flag.String("listen", "127.0.0.1:50052", "plaintext gRPC listen address (use port 0 for an ephemeral port)")
-	configPath := flag.String("config", "", "optional JSON config snapshot loaded into the in-memory store")
-	nodeTTL := flag.Duration("node-ttl", cpapi.DefaultNodeTTL, "node liveness TTL without heartbeat")
-	devCluster := flag.Bool("dev-cluster", false, "load a synthetic 2-region, 2-node-per-region, 128-partition cluster instead of -config")
 	metricsListen := flag.String("metrics-listen", defaultMetricsListen, `HTTP listen address for /metrics and /healthz ("none" disables)`)
 	flag.Parse()
 	if flag.NArg() != 0 {
@@ -76,59 +79,44 @@ func main() {
 		*metricsListen = ""
 	}
 
-	if *devCluster && *configPath != "" {
+	if options.devCluster && options.configPath != "" {
 		fmt.Fprintln(os.Stderr, "-dev-cluster and -config are mutually exclusive")
 		os.Exit(2)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	store := statestore.NewMemory()
-	revision := uint64(0)
-	if *devCluster {
-		cfg := cpconfig.SyntheticDevCluster()
-		if err := store.ApplyConfig(context.Background(), cfg); err != nil {
-			logger.Error("apply dev cluster", "error", err)
-			os.Exit(1)
-		}
-		revision = cfg.Revision
-		logger.Info("loaded synthetic dev cluster", "partitions", cfg.PartitionCount, "regions", len(cfg.Regions))
+	if err := run(*listen, *metricsListen, options, logger); err != nil {
+		logger.Error("cp-api stopped", "error", err)
+		os.Exit(1)
 	}
-	if *configPath != "" {
-		cfg, err := cpconfig.LoadFile(*configPath)
-		if err != nil {
-			logger.Error("load bootstrap config", "path", *configPath, "error", err)
-			os.Exit(1)
-		}
-		if err := store.ApplyConfig(context.Background(), cfg); err != nil {
-			logger.Error("apply bootstrap config", "path", *configPath, "error", err)
-			os.Exit(1)
-		}
-		revision = cfg.Revision
-	}
+}
 
-	listener, err := net.Listen("tcp", *listen)
+func run(listen, metricsListen string, options storeOptions, logger *slog.Logger) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	store, revision, closeStore, err := openStore(ctx, options)
+	cancel()
 	if err != nil {
-		logger.Error("listen", "address", *listen, "error", err)
-		os.Exit(1)
+		return err
 	}
-	server, api := newServer(store, logger, cpapi.WithNodeTTL(*nodeTTL))
-	if err := serveMetrics(*metricsListen, api, logger); err != nil {
-		logger.Error("metrics listen", "address", *metricsListen, "error", err)
-		_ = listener.Close()
-		os.Exit(1)
+	defer closeStore()
+
+	listener, err := net.Listen("tcp", listen)
+	if err != nil {
+		return fmt.Errorf("gRPC listen: %w", err)
+	}
+	defer listener.Close()
+	server, api := newServer(store, logger, cpapi.WithNodeTTL(options.nodeTTL))
+	if err := serveMetrics(metricsListen, api, logger); err != nil {
+		return fmt.Errorf("metrics listen: %w", err)
 	}
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	go func() {
-		<-signals
+		<-ctx.Done()
 		server.GracefulStop()
 	}()
 
-	logger.Info("cp-api listening", "address", listener.Addr().String(), "config_revision", revision)
-	if err := server.Serve(listener); err != nil {
-		logger.Error("serve", "error", err)
-		os.Exit(1)
-	}
+	logger.Info("cp-api listening", "address", listener.Addr().String(), "store", options.backend, "config_revision", revision)
+	return server.Serve(listener)
 }
