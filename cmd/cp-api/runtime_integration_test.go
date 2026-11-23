@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +78,7 @@ func TestEtcdHARuntime(t *testing.T) {
 	}
 	nodeA, nodeB := dial(apiA, "node-1"), dial(apiB, "node-1")
 	gatewayIdentity := dial(apiA, "gw-local")
+	gatewayOnB := dial(apiB, "gw-local")
 	untrusted := dial(apiA, "untrusted")
 	heartbeat := func(client *cplink.Client, node, region string) (*cpv1.HeartbeatResponse, error) {
 		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
@@ -140,12 +142,27 @@ func TestEtcdHARuntime(t *testing.T) {
 	}
 
 	compose("stop", "-t", "0", "cp-region-a")
-	// Wait past heartbeat TTL. Reads and writes still work only if the embedded
-	// Agents refresh leases on the remaining regional API.
-	time.Sleep(5 * time.Second)
-	eventually(t, 15*time.Second, func() bool { return get() && put("cp-failover") })
+	stoppedAt := time.Now()
+	eventually(t, 15*time.Second, func() bool {
+		if time.Since(stoppedAt) <= 5*time.Second {
+			return false
+		}
+		config, err := gatewayOnB.GetConfig(t.Context(), &cpv1.GetConfigRequest{NodeId: "gw-local", Kind: cpv1.AgentKind_AGENT_KIND_GATEWAY})
+		if err != nil || len(config.GetConfig().GetPartitions()) == 0 || !config.GetConfig().GetPartitions()[0].GetReady() {
+			return false
+		}
+		_, metrics := runtimeHTTP(gwStatus, "/metrics")
+		return freshGatewaySnapshot(metrics) && get() && put("cp-failover")
+	})
 	t.Log("Gateway and embedded agents stayed operational through the other regional API")
 
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	rejected := exec.CommandContext(ctx, "docker", append(append([]string(nil), composeArgs...), "exec", "-T", "-e", "ETCDCTL_CERT=/pki/gw-local.pem", "-e", "ETCDCTL_KEY=/pki/gw-local.key", "etcd-1", "etcdctl", "--command-timeout=2s", "get", "/runtime/config/snapshot")...)
+	err = rejected.Run()
+	cancel()
+	if err == nil {
+		t.Fatal("etcd accepted a client certificate from the CP client CA")
+	}
 	compose("exec", "-T", "etcd-1", "etcdctl", "snapshot", "save", "/tmp/backup.db")
 	container := compose("ps", "-q", "etcd-1")
 	backup := t.TempDir()
@@ -194,6 +211,17 @@ func TestEtcdHARuntime(t *testing.T) {
 	t.Log("loss of the Raft majority rejected strict reads and writes with the Control Plane available")
 
 	testRuntimeRestore(t, backup, project)
+}
+
+func freshGatewaySnapshot(metrics string) bool {
+	const name = "oracache_gateway_config_snapshot_age_seconds "
+	for line := range strings.SplitSeq(metrics, "\n") {
+		if value, ok := strings.CutPrefix(line, name); ok {
+			age, err := strconv.ParseFloat(value, 64)
+			return err == nil && age >= 0 && age < 4
+		}
+	}
+	return false
 }
 
 func runtimeHTTP(address, path string) (int, string) {

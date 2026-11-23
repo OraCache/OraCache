@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -586,5 +587,41 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 		case <-deadline.C:
 			t.Fatal("condition was not met before deadline")
 		}
+	}
+}
+
+func TestAgentCheckpointRequiresFreshConfirmation(t *testing.T) {
+	holder := cpconfig.NewHolder()
+	current := cpconfigtest.Config(8)
+	response := current.Clone()
+	client := &fakeClient{configFn: func(_ context.Context, req *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
+		if req.GetKnownRevision() != 0 {
+			t.Fatalf("cold agent asked for an abbreviated response at revision %d", req.GetKnownRevision())
+		}
+		return &controlplanev1.GetConfigResponse{Revision: response.Revision, Config: response.ToProto()}, nil
+	}}
+	agent, clock := newTestAgent(t, client, holder)
+	agent.disk = &cpconfig.Disk{Path: filepath.Join(t.TempDir(), "agent.json"), Cluster: "test", Region: "eu", Client: "node/eu-1", MaxAge: time.Hour}
+	if err := agent.disk.Save(cpconfig.Saved{Config: current, AcceptedAt: clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.restore(); err != nil {
+		t.Fatal(err)
+	}
+	if agent.Revision() != 8 || agent.ConfirmedConfig() != nil {
+		t.Fatal("cold config must be restored without write authority")
+	}
+	response.Revision = 7
+	if err := agent.pullConfig(t.Context()); err == nil || agent.Confirmed() {
+		t.Fatal("CP rollback confirmed the cold snapshot")
+	}
+	response.Revision = 8
+	response.Nodes[0].Address = "other:8000"
+	if err := agent.pullConfig(t.Context()); err == nil || agent.Confirmed() {
+		t.Fatal("inconsistent topology confirmed the cold snapshot")
+	}
+	response = current
+	if err := agent.pullConfig(t.Context()); err != nil || !agent.Confirmed() {
+		t.Fatalf("fresh config was not confirmed: %v", err)
 	}
 }
