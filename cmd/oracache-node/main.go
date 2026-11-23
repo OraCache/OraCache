@@ -19,11 +19,9 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	"github.com/OraCache/oracache/internal/cpagent"
+	"github.com/OraCache/oracache/internal/cplink"
 	"github.com/OraCache/oracache/internal/partition"
 )
 
@@ -32,7 +30,7 @@ func main() {
 		nodeID      = flag.String("node-id", "", "node identifier known to Control Plane")
 		region      = flag.String("region", "", "region identifier known to Control Plane")
 		instance    = flag.String("instance", "", "optional instance label for diagnostics")
-		cpAddr      = flag.String("cp-addr", "127.0.0.1:50052", "Control Plane API address")
+		cpAddr      = flag.String("cp-addr", "127.0.0.1:50052", "ordered comma-separated Control Plane API addresses")
 		partitions  = flag.String("partitions", "all", "partition ids or spec (all/even/odd/1-9/0,2,5-9) this node holds")
 		leaders     = flag.String("leader-partitions", "all", "subset of -partitions this node leads")
 		term        = flag.Uint64("term", 1, "Raft term reported in heartbeat")
@@ -63,19 +61,25 @@ func main() {
 		ledSet[id] = struct{}{}
 	}
 
-	conn, err := grpc.NewClient(*cpAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := cplink.Dial(*cpAddr)
 	if err != nil {
 		logger.Error("dial cp", "address", *cpAddr, "error", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
+	disk, err := cplink.DiskFromEnv(*region, "node/"+*nodeID)
+	if err != nil {
+		logger.Error("configure checkpoint", "error", err)
+		os.Exit(2)
+	}
 	provider := statusProvider{nodeID: *nodeID, region: *region, held: held, led: ledSet, term: *term}
 	agent, err := cpagent.New(cpagent.Options{
 		NodeID:            *nodeID,
 		Region:            *region,
 		Instance:          *instance,
-		Client:            controlplanev1.NewControlPlaneAPIClient(conn),
+		Client:            conn,
+		Disk:              disk,
 		Statuses:          provider,
 		HeartbeatInterval: *hbInterval,
 		Logger:            logger,

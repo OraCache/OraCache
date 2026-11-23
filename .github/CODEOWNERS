@@ -15,6 +15,7 @@
 /internal/statestore/ @pluplohapy
 /internal/cpagent/ @pluplohapy
 /internal/cpmetrics/ @pluplohapy
+/internal/cplink/ @pluplohapy
 /internal/partition/ @pluplohapy
 /cmd/cp-api/ @pluplohapy
 /cmd/oracache-node/ @pluplohapy

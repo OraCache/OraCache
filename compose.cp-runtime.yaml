@@ -1,0 +1,151 @@
+# Isolated integration fixture. Ports are ephemeral and certificates are disposable.
+x-etcd: &etcd
+  image: quay.io/coreos/etcd:v3.6.16
+  environment:
+    ETCDCTL_ENDPOINTS: https://127.0.0.1:2379
+    ETCDCTL_CACERT: /pki/etcd-ca.pem
+    ETCDCTL_CERT: /pki/cp-etcd.pem
+    ETCDCTL_KEY: /pki/cp-etcd.key
+
+x-cp: &cp
+  image: ${ORACACHE_CP_IMAGE:-oracache-runtime:local}
+  command: [/cp-api, --store=etcd, "--etcd-endpoints=https://etcd-1:2379,https://etcd-2:2379,https://etcd-3:2379", --etcd-prefix=/runtime, --listen=0.0.0.0:28081, --metrics-listen=0.0.0.0:9464, --node-ttl=4s]
+  environment:
+    ORACACHE_CP_CLUSTER_ID: runtime-test
+    ORACACHE_CP_TLS_CA: /pki/cp-ca.pem
+    ORACACHE_CP_TLS_CERT: /pki/cp-server.pem
+    ORACACHE_CP_TLS_KEY: /pki/cp-server.key
+    ORACACHE_ETCD_TLS_CA: /pki/etcd-ca.pem
+    ORACACHE_ETCD_TLS_CERT: /pki/cp-etcd.pem
+    ORACACHE_ETCD_TLS_KEY: /pki/cp-etcd.key
+  volumes: ["${ORACACHE_TEST_PKI:?set test PKI path}:/pki:ro"]
+
+x-storage: &storage
+  image: ${ORACACHE_CP_IMAGE:-oracache-runtime:local}
+  entrypoint:
+    - /storage-node
+    - --cp-addr=cp-region-a:28081,cp-region-b:28081
+    - --heartbeat-interval=500ms
+    - --grpc-listen=0.0.0.0:28091
+    - --raft-listen=0.0.0.0:28191
+    - --peer=1,node-1,node-1:28091,http://node-1:28191/raft
+    - --peer=2,node-2,node-2:28091,http://node-2:28191/raft
+    - --peer=3,node-3,node-3:28091,http://node-3:28191/raft
+
+services:
+  etcd-1:
+    <<: *etcd
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd-1
+      - --data-dir=/var/lib/etcd
+      - --listen-client-urls=https://0.0.0.0:2379
+      - --advertise-client-urls=https://etcd-1:2379
+      - --listen-peer-urls=https://0.0.0.0:2380
+      - --initial-advertise-peer-urls=https://etcd-1:2380
+      - --initial-cluster=etcd-1=https://etcd-1:2380,etcd-2=https://etcd-2:2380,etcd-3=https://etcd-3:2380
+      - --client-cert-auth
+      - --trusted-ca-file=/pki/etcd-ca.pem
+      - --cert-file=/pki/etcd-server.pem
+      - --key-file=/pki/etcd-server.key
+      - --peer-client-cert-auth
+      - --peer-trusted-ca-file=/pki/etcd-ca.pem
+      - --peer-cert-file=/pki/etcd-server.pem
+      - --peer-key-file=/pki/etcd-server.key
+    volumes: ["${ORACACHE_TEST_PKI:?set test PKI path}:/pki:ro", "etcd-1:/var/lib/etcd"]
+  etcd-2:
+    <<: *etcd
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd-2
+      - --data-dir=/var/lib/etcd
+      - --listen-client-urls=https://0.0.0.0:2379
+      - --advertise-client-urls=https://etcd-2:2379
+      - --listen-peer-urls=https://0.0.0.0:2380
+      - --initial-advertise-peer-urls=https://etcd-2:2380
+      - --initial-cluster=etcd-1=https://etcd-1:2380,etcd-2=https://etcd-2:2380,etcd-3=https://etcd-3:2380
+      - --client-cert-auth
+      - --trusted-ca-file=/pki/etcd-ca.pem
+      - --cert-file=/pki/etcd-server.pem
+      - --key-file=/pki/etcd-server.key
+      - --peer-client-cert-auth
+      - --peer-trusted-ca-file=/pki/etcd-ca.pem
+      - --peer-cert-file=/pki/etcd-server.pem
+      - --peer-key-file=/pki/etcd-server.key
+    volumes: ["${ORACACHE_TEST_PKI:?set test PKI path}:/pki:ro", "etcd-2:/var/lib/etcd"]
+  etcd-3:
+    <<: *etcd
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd-3
+      - --data-dir=/var/lib/etcd
+      - --listen-client-urls=https://0.0.0.0:2379
+      - --advertise-client-urls=https://etcd-3:2379
+      - --listen-peer-urls=https://0.0.0.0:2380
+      - --initial-advertise-peer-urls=https://etcd-3:2380
+      - --initial-cluster=etcd-1=https://etcd-1:2380,etcd-2=https://etcd-2:2380,etcd-3=https://etcd-3:2380
+      - --client-cert-auth
+      - --trusted-ca-file=/pki/etcd-ca.pem
+      - --cert-file=/pki/etcd-server.pem
+      - --key-file=/pki/etcd-server.key
+      - --peer-client-cert-auth
+      - --peer-trusted-ca-file=/pki/etcd-ca.pem
+      - --peer-cert-file=/pki/etcd-server.pem
+      - --peer-key-file=/pki/etcd-server.key
+    volumes: ["${ORACACHE_TEST_PKI:?set test PKI path}:/pki:ro", "etcd-3:/var/lib/etcd"]
+  cp-region-a:
+    <<: *cp
+    ports: ["127.0.0.1::28081", "127.0.0.1::9464"]
+  cp-region-b:
+    <<: *cp
+    ports: ["127.0.0.1::28081", "127.0.0.1::9464"]
+  bootstrap:
+    <<: *cp
+    profiles: [bootstrap]
+    command: [/cp-api, --store=etcd, "--etcd-endpoints=https://etcd-1:2379,https://etcd-2:2379,https://etcd-3:2379", --etcd-prefix=/runtime, --config=/cp-config.json, --bootstrap-only]
+  node-1:
+    <<: *storage
+    command: [--node-id=node-1, --peer-id=1]
+    environment:
+      ORACACHE_CP_CLUSTER_ID: runtime-test
+      ORACACHE_CP_TLS_CA: /pki/cp-ca.pem
+      ORACACHE_CP_TLS_CERT: /pki/node-1.pem
+      ORACACHE_CP_TLS_KEY: /pki/node-1.key
+      ORACACHE_CP_SNAPSHOT_FILE: /state/config.json
+    volumes: ["${ORACACHE_TEST_PKI:?set test PKI path}:/pki:ro", "${ORACACHE_TEST_STATE:?set test state path}/node-1:/state"]
+  node-2:
+    <<: *storage
+    command: [--node-id=node-2, --peer-id=2]
+    environment:
+      ORACACHE_CP_CLUSTER_ID: runtime-test
+      ORACACHE_CP_TLS_CA: /pki/cp-ca.pem
+      ORACACHE_CP_TLS_CERT: /pki/node-2.pem
+      ORACACHE_CP_TLS_KEY: /pki/node-2.key
+      ORACACHE_CP_SNAPSHOT_FILE: /state/config.json
+    volumes: ["${ORACACHE_TEST_PKI:?set test PKI path}:/pki:ro", "${ORACACHE_TEST_STATE:?set test state path}/node-2:/state"]
+  node-3:
+    <<: *storage
+    command: [--node-id=node-3, --peer-id=3]
+    environment:
+      ORACACHE_CP_CLUSTER_ID: runtime-test
+      ORACACHE_CP_TLS_CA: /pki/cp-ca.pem
+      ORACACHE_CP_TLS_CERT: /pki/node-3.pem
+      ORACACHE_CP_TLS_KEY: /pki/node-3.key
+      ORACACHE_CP_SNAPSHOT_FILE: /state/config.json
+    volumes: ["${ORACACHE_TEST_PKI:?set test PKI path}:/pki:ro", "${ORACACHE_TEST_STATE:?set test state path}/node-3:/state"]
+  api-gateway:
+    image: ${ORACACHE_CP_IMAGE:-oracache-runtime:local}
+    command: [/api-gateway, --region=region-a, --node-id=gw-local, "--cp-addr=cp-region-a:28081,cp-region-b:28081", --listen=0.0.0.0:28080, --status-listen=0.0.0.0:9466, --poll-interval=500ms]
+    environment:
+      ORACACHE_CP_CLUSTER_ID: runtime-test
+      ORACACHE_CP_TLS_CA: /pki/cp-ca.pem
+      ORACACHE_CP_TLS_CERT: /pki/gw-local.pem
+      ORACACHE_CP_TLS_KEY: /pki/gw-local.key
+      ORACACHE_CP_SNAPSHOT_FILE: /state/config.json
+    volumes: ["${ORACACHE_TEST_PKI:?set test PKI path}:/pki:ro", "${ORACACHE_TEST_STATE:?set test state path}/gateway:/state"]
+    ports: ["127.0.0.1::28080", "127.0.0.1::9466"]
+
+volumes:
+  etcd-1:
+  etcd-2:
+  etcd-3:

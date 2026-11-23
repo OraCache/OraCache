@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/partition"
@@ -36,6 +37,8 @@ type Leader struct {
 
 type snapshot struct {
 	revision       uint64
+	cold           bool
+	acceptedAt     time.Time
 	partitionCount uint32
 	masterRegion   string
 	local          map[uint32]partitionRoute
@@ -109,6 +112,10 @@ func (r *Router) Apply(cfg *cpconfig.Config) error {
 // Это позволяет обновлять liveness и лидеров без изменения revision топологии.
 // Более старая revision и изменение числа партиций отклоняются.
 func (r *Router) ApplyView(cfg *cpconfig.Config) error {
+	return r.applyView(cfg, nil, time.Now())
+}
+
+func (r *Router) applyView(cfg *cpconfig.Config, restored *cpconfig.Saved, now time.Time) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -123,6 +130,12 @@ func (r *Router) ApplyView(cfg *cpconfig.Config) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	old := r.cur.Load()
+	if restored != nil {
+		if old != nil {
+			return errors.New("routing map already loaded")
+		}
+		old = checkpointObservations(next, restored.Observations)
+	}
 	if old != nil {
 		if cfg.Revision < old.revision {
 			return fmt.Errorf("%w: have %d, got %d", ErrStaleRevision, old.revision, cfg.Revision)
@@ -132,6 +145,14 @@ func (r *Router) ApplyView(cfg *cpconfig.Config) error {
 		}
 		keepLeaderObservations(old.local, next.local)
 		keepLeaderObservations(old.write, next.write)
+	}
+	next.acceptedAt = now
+	if restored != nil {
+		next.cold = true
+		next.acceptedAt = restored.AcceptedAt
+		for id, route := range next.write {
+			next.write[id] = route.forOperation(true)
+		}
 	}
 	r.cur.Store(next)
 	return nil

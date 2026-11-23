@@ -103,6 +103,7 @@ type Server struct {
 	heartbeatInterval time.Duration
 	nodeTTL           time.Duration
 	startedAt         time.Time
+	minimumRevision   uint64
 	metrics           *cpmetrics.Metrics
 }
 
@@ -123,6 +124,8 @@ func New(store statestore.Store, opts ...Option) *Server {
 		opt(s)
 	}
 	s.startedAt = s.clock.Now()
+	s.metrics.Describe("oracache_cp_statestore_errors_total", "counter", "StateStore operation failures.")
+	s.metrics.RegisterGaugeFunc("oracache_cp_config_ready", "Whether an authoritative configuration is available.", s.readinessSamples)
 	s.metrics.RegisterGaugeFunc(cpmetrics.HeartbeatAge, "Seconds since the CP API received the last heartbeat from a configured node.", s.heartbeatAges)
 	return s
 }
@@ -133,7 +136,7 @@ func (s *Server) Metrics() *cpmetrics.Metrics { return s.metrics }
 func (s *Server) heartbeatAges(ctx context.Context) ([]cpmetrics.GaugeSample, error) {
 	receipts, err := s.store.HeartbeatReceipts(ctx)
 	if err != nil {
-		s.log.WarnContext(ctx, "heartbeat age collection failed", "error", err)
+		s.storeError(ctx, "heartbeat_receipts", err)
 		return nil, nil // Keep the process-local RPC outcome metrics available.
 	}
 	now := s.clock.Now()
@@ -216,6 +219,10 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 		})
 	}
 
+	if s.minimumRevision > 0 && !s.Ready(ctx) {
+		s.metrics.Heartbeat(cpmetrics.HeartbeatError)
+		return nil, status.Error(codes.Unavailable, "configuration revision floor is not available")
+	}
 	revision, err := s.store.UpsertHeartbeat(ctx, heartbeat)
 	if err != nil {
 		if errors.Is(err, statestore.ErrInvalidHeartbeat) {
@@ -223,7 +230,7 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 			return nil, status.Error(codes.InvalidArgument, "invalid heartbeat")
 		}
 		s.metrics.Heartbeat(cpmetrics.HeartbeatError)
-		s.log.ErrorContext(ctx, "store heartbeat failed", "node_id", heartbeat.NodeID, "region", heartbeat.Region, "error", err)
+		s.storeError(ctx, "heartbeat", err)
 		return nil, status.Error(codes.Unavailable, "heartbeat store unavailable")
 	}
 	s.metrics.Heartbeat(cpmetrics.HeartbeatAccepted)
@@ -271,8 +278,12 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 	}
 	if err != nil {
 		s.metrics.ConfigPull(cpmetrics.PullError)
-		s.log.ErrorContext(ctx, "store config failed", "node_id", req.GetNodeId(), "error", err)
+		s.storeError(ctx, "get_config", err)
 		return nil, status.Error(codes.Unavailable, "config store unavailable")
+	}
+	if snapshot.Revision < s.minimumRevision {
+		s.metrics.ConfigPull(cpmetrics.PullError)
+		return nil, status.Error(codes.Unavailable, "configuration revision floor is not available")
 	}
 	if req.GetKnownRevision() > snapshot.Revision {
 		s.metrics.ConfigPull(cpmetrics.PullAhead)

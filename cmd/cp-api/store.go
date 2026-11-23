@@ -2,27 +2,33 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/cplink"
 	"github.com/OraCache/oracache/internal/statestore"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 )
 
 type storeOptions struct {
-	backend    string
-	endpoints  string
-	prefix     string
-	configPath string
-	nodeTTL    time.Duration
-	devCluster bool
+	backend         string
+	endpoints       string
+	prefix          string
+	configPath      string
+	nodeTTL         time.Duration
+	devCluster      bool
+	minimumRevision uint64
 }
 
 func openStore(ctx context.Context, options storeOptions) (statestore.Store, uint64, func(), error) {
+	return configureStore(ctx, options, true)
+}
+
+func startStore(ctx context.Context, options storeOptions) (statestore.Store, uint64, func(), error) {
+	return configureStore(ctx, options, options.backend != "etcd" || options.configPath != "" || options.devCluster)
+}
+
+func configureStore(ctx context.Context, options storeOptions, bootstrap bool) (statestore.Store, uint64, func(), error) {
 	var store statestore.Store
 	var publish func(context.Context, *cpconfig.Config) error
 	closeStore := func() {}
@@ -32,19 +38,7 @@ func openStore(ctx context.Context, options storeOptions) (statestore.Store, uin
 		memory := statestore.NewMemory()
 		store, publish = memory, memory.ApplyConfig
 	case "etcd":
-		endpoints := strings.Split(options.endpoints, ",")
-		for i, endpoint := range endpoints {
-			endpoints[i] = strings.TrimSpace(endpoint)
-			if endpoints[i] == "" {
-				return nil, 0, nil, errors.New("-etcd-endpoints must contain non-empty endpoints")
-			}
-		}
-		client, err := clientv3.New(clientv3.Config{
-			Endpoints:   endpoints,
-			DialTimeout: 3 * time.Second,
-			// The CP API logs store failures with the RPC outcome.
-			Logger: zap.NewNop(),
-		})
+		client, err := cplink.DialEtcd(options.endpoints)
 		if err != nil {
 			return nil, 0, nil, fmt.Errorf("open etcd client: %w", err)
 		}
@@ -59,6 +53,9 @@ func openStore(ctx context.Context, options storeOptions) (statestore.Store, uin
 		return nil, 0, nil, fmt.Errorf("unknown -store %q (use memory or etcd)", options.backend)
 	}
 
+	if !bootstrap {
+		return store, 0, closeStore, nil
+	}
 	revision, err := bootstrapStore(ctx, store, publish, options)
 	if err != nil {
 		closeStore()
@@ -98,4 +95,20 @@ func bootstrapStore(ctx context.Context, store statestore.Store, publish func(co
 		return 0, fmt.Errorf("read bootstrapped snapshot: %w", err)
 	}
 	return snapshot.Revision, nil
+}
+
+func recoverConfig(ctx context.Context, options storeOptions, revision uint64) error {
+	if options.backend != "etcd" {
+		return fmt.Errorf("recovery requires -store etcd")
+	}
+	client, err := cplink.DialEtcd(options.endpoints)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	store, err := statestore.NewEtcd(client, options.prefix, options.nodeTTL)
+	if err != nil {
+		return err
+	}
+	return store.RecoverConfig(ctx, revision)
 }

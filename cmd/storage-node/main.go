@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/OraCache/oracache/internal/cplink"
 	"github.com/OraCache/oracache/internal/node"
 	"github.com/OraCache/oracache/shardraft"
 )
@@ -48,7 +49,7 @@ func main() {
 	flag.Var(&peers, "peer", "group member id,node-id,client-address,raft-url (repeat for every member, including this one)")
 	flag.StringVar(&cfg.GRPCAddr, "grpc-listen", "127.0.0.1:28091", "client gRPC listen address")
 	flag.StringVar(&cfg.RaftAddr, "raft-listen", "127.0.0.1:28191", "Raft HTTP transport listen address")
-	flag.StringVar(&cfg.CPAddr, "cp-addr", "", "Control Plane gRPC address; empty disables heartbeats")
+	flag.StringVar(&cfg.CPAddr, "cp-addr", "", "ordered comma-separated Control Plane addresses; empty disables heartbeats")
 	flag.DurationVar(&cfg.HeartbeatInterval, "heartbeat-interval", 0, "CP heartbeat interval (zero follows the Control Plane hint)")
 	flag.StringVar(&readMode, "read-mode", "linearizable", "linearizable (leader ReadIndex) or local (possibly stale)")
 	flag.IntVar(&cfg.Store.MaxVersions, "max-versions", 0, "versions kept per key (0: store default)")
@@ -73,6 +74,14 @@ func main() {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	cfg.Logger = logger
+	if cfg.CPAddr != "" {
+		disk, err := cplink.DiskFromEnv(cfg.Region, "node/"+cfg.NodeID)
+		if err != nil {
+			logger.Error("configure checkpoint", "error", err)
+			os.Exit(2)
+		}
+		cfg.CPDisk = disk
+	}
 
 	n, err := node.New(cfg)
 	if err != nil {

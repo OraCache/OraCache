@@ -1,4 +1,4 @@
-// cp-api обслуживает stateless API Control Plane по plaintext gRPC.
+// cp-api обслуживает stateless gRPC API Control Plane.
 //
 // По умолчанию используется in-memory PoC. Для общего состояния CP API
 // поддерживает etcd за той же границей statestore.Store.
@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -21,17 +22,24 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	"github.com/OraCache/oracache/internal/cpapi"
+	"github.com/OraCache/oracache/internal/cplink"
 	"github.com/OraCache/oracache/internal/statestore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 const defaultMetricsListen = "127.0.0.1:9464"
 
 func newServer(store statestore.Store, logger *slog.Logger, opts ...cpapi.Option) (*grpc.Server, *cpapi.Server) {
 	api := cpapi.New(store, append([]cpapi.Option{cpapi.WithLogger(logger)}, opts...)...)
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
+	return registerServer(api), api
+}
+
+func registerServer(api *cpapi.Server, options ...grpc.ServerOption) *grpc.Server {
+	options = append(options, grpc.MaxRecvMsgSize(16<<20))
+	server := grpc.NewServer(options...)
 	controlplanev1.RegisterControlPlaneAPIServer(server, api)
-	return server, api
+	return server
 }
 
 // serveMetrics поднимает /metrics. Ошибка listener'а возвращается, чтобы main
@@ -47,12 +55,20 @@ func serveMetrics(listen string, api *cpapi.Server, logger *slog.Logger) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if !api.Ready(r.Context()) {
+			http.Error(w, "config unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	metricsListener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
 	}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 2 * time.Second}
 	go func() {
-		if err := http.Serve(metricsListener, mux); err != nil {
+		if err := server.Serve(metricsListener); err != nil {
 			logger.Error("metrics server stopped", "address", listen, "error", err)
 		}
 	}()
@@ -68,7 +84,10 @@ func main() {
 	flag.StringVar(&options.configPath, "config", "", "JSON snapshot for an empty store")
 	flag.DurationVar(&options.nodeTTL, "node-ttl", cpapi.DefaultNodeTTL, "node liveness TTL without heartbeat")
 	flag.BoolVar(&options.devCluster, "dev-cluster", false, "bootstrap a synthetic 2-region, 2-node-per-region, 128-partition cluster")
-	listen := flag.String("listen", "127.0.0.1:50052", "plaintext gRPC listen address (use port 0 for an ephemeral port)")
+	flag.Uint64Var(&options.minimumRevision, "minimum-config-revision", 0, "reject configs older than this application revision")
+	bootstrapOnly := flag.Bool("bootstrap-only", false, "initialize the configured StateStore and exit")
+	recoveryRevision := flag.Uint64("recover-config-revision", 0, "offline etcd recovery: republish the restored config at this application revision and exit")
+	listen := flag.String("listen", "127.0.0.1:50052", "gRPC listen address (use port 0 for an ephemeral port)")
 	metricsListen := flag.String("metrics-listen", defaultMetricsListen, `HTTP listen address for /metrics and /healthz ("none" disables)`)
 	flag.Parse()
 	if flag.NArg() != 0 {
@@ -85,6 +104,32 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	if *bootstrapOnly {
+		if options.configPath == "" && !options.devCluster {
+			logger.Error("bootstrap requires a config source")
+			os.Exit(2)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, revision, closeStore, err := openStore(ctx, options)
+		cancel()
+		if err != nil {
+			logger.Error("bootstrap config", "error", err)
+			os.Exit(1)
+		}
+		closeStore()
+		logger.Info("bootstrapped config", "config_revision", revision)
+		return
+	}
+	if *recoveryRevision != 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := recoverConfig(ctx, options, *recoveryRevision); err != nil {
+			logger.Error("recover config", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("recovered config", "config_revision", *recoveryRevision)
+		return
+	}
 	if err := run(*listen, *metricsListen, options, logger); err != nil {
 		logger.Error("cp-api stopped", "error", err)
 		os.Exit(1)
@@ -93,7 +138,7 @@ func main() {
 
 func run(listen, metricsListen string, options storeOptions, logger *slog.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	store, revision, closeStore, err := openStore(ctx, options)
+	store, revision, closeStore, err := startStore(ctx, options)
 	cancel()
 	if err != nil {
 		return err
@@ -105,7 +150,16 @@ func run(listen, metricsListen string, options storeOptions, logger *slog.Logger
 		return fmt.Errorf("gRPC listen: %w", err)
 	}
 	defer listener.Close()
-	server, api := newServer(store, logger, cpapi.WithNodeTTL(options.nodeTTL))
+	api := cpapi.New(store, cpapi.WithLogger(logger), cpapi.WithNodeTTL(options.nodeTTL), cpapi.WithMinimumRevision(options.minimumRevision))
+	tlsConfig, err := cplink.TLSFromEnv("ORACACHE_CP", true)
+	if err != nil {
+		return err
+	}
+	serverOptions, err := transportOptions(tlsConfig, cplink.Cluster())
+	if err != nil {
+		return err
+	}
+	server := registerServer(api, serverOptions...)
 	if err := serveMetrics(metricsListen, api, logger); err != nil {
 		return fmt.Errorf("metrics listen: %w", err)
 	}
@@ -119,4 +173,15 @@ func run(listen, metricsListen string, options storeOptions, logger *slog.Logger
 
 	logger.Info("cp-api listening", "address", listener.Addr().String(), "store", options.backend, "config_revision", revision)
 	return server.Serve(listener)
+}
+
+func transportOptions(config *tls.Config, cluster string) ([]grpc.ServerOption, error) {
+	options := []grpc.ServerOption{grpc.UnaryInterceptor(cplink.Authorize(cluster, config != nil))}
+	if config != nil {
+		if cluster == "" {
+			return nil, fmt.Errorf("CP mTLS requires ORACACHE_CP_CLUSTER_ID")
+		}
+		options = append(options, grpc.Creds(credentials.NewTLS(config)))
+	}
+	return options, nil
 }
