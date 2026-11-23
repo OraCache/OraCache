@@ -18,7 +18,7 @@ func (p *Poller) Restore() error {
 	if err != nil {
 		return err
 	}
-	return p.Router.applyView(saved.Config, &saved, now)
+	return p.Router.applyView(saved.Config, &saved, now, nil)
 }
 
 func checkpointObservations(next *snapshot, records []cpconfig.Observation) *snapshot {
@@ -40,8 +40,7 @@ func checkpointObservations(next *snapshot, records []cpconfig.Observation) *sna
 	return prior
 }
 
-func (r *Router) checkpoint(config *cpconfig.Config) cpconfig.Saved {
-	current := r.cur.Load()
+func (current *snapshot) checkpoint(config *cpconfig.Config) cpconfig.Saved {
 	saved := cpconfig.Saved{Config: config, AcceptedAt: current.acceptedAt}
 	for i, routes := range []map[uint32]partitionRoute{current.local, current.write} {
 		for partition, route := range routes {

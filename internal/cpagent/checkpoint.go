@@ -19,12 +19,7 @@ func (a *Agent) restore() error {
 	if !ok || node.Region != a.region {
 		return errors.New("checkpoint has no local storage node")
 	}
-	a.cold.Store(true)
-	if err := a.holder.Apply(saved.Config); err != nil {
-		a.cold.Store(false)
-		return err
-	}
-	return nil
+	return a.holder.Apply(saved.Config)
 }
 
 func (a *Agent) save(ctx context.Context) {

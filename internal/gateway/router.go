@@ -112,10 +112,10 @@ func (r *Router) Apply(cfg *cpconfig.Config) error {
 // Это позволяет обновлять liveness и лидеров без изменения revision топологии.
 // Более старая revision и изменение числа партиций отклоняются.
 func (r *Router) ApplyView(cfg *cpconfig.Config) error {
-	return r.applyView(cfg, nil, time.Now())
+	return r.applyView(cfg, nil, time.Now(), nil)
 }
 
-func (r *Router) applyView(cfg *cpconfig.Config, restored *cpconfig.Saved, now time.Time) error {
+func (r *Router) applyView(cfg *cpconfig.Config, restored *cpconfig.Saved, now time.Time, disk *cpconfig.Disk) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -152,6 +152,11 @@ func (r *Router) applyView(cfg *cpconfig.Config, restored *cpconfig.Saved, now t
 		next.acceptedAt = restored.AcceptedAt
 		for id, route := range next.write {
 			next.write[id] = route.forOperation(true)
+		}
+	}
+	if disk != nil {
+		if err := disk.Save(next.checkpoint(cfg)); err != nil {
+			return fmt.Errorf("persist gateway checkpoint: %w", err)
 		}
 	}
 	r.cur.Store(next)

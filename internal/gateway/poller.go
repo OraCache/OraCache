@@ -117,13 +117,8 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("oracache/gateway: invalid config: %w", err)
 	}
-	if err := p.Router.applyView(cfg, nil, time.Now()); err != nil {
+	if err := p.Router.applyView(cfg, nil, time.Now(), p.Disk); err != nil {
 		return fmt.Errorf("oracache/gateway: apply live view: %w", err)
-	}
-	if p.Disk != nil {
-		if err := p.Disk.Save(p.Router.checkpoint(cfg)); err != nil {
-			p.logger().WarnContext(ctx, "save gateway checkpoint failed", "error", err)
-		}
 	}
 	if resp.GetRevision() == known {
 		p.logger().Debug("gateway live view refreshed",
