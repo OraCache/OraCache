@@ -170,6 +170,13 @@ func TestEtcdHARuntime(t *testing.T) {
 	t.Log("etcd quorum loss returned Unavailable and preserved data operations and diagnostics")
 
 	compose("restart", "-t", "0", "api-gateway")
+	gwStatus = addr("api-gateway", "9466")
+	restarted, err := grpc.NewClient(addr("api-gateway", "28080"), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	gateway = gwv1.NewCacheGatewayClient(restarted)
 	eventually(t, 20*time.Second, func() bool { return get() })
 	ready, _ := runtimeHTTP(gwStatus, "/readyz")
 	if ready != 503 || put("cold") {
