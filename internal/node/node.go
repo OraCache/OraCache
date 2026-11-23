@@ -25,6 +25,7 @@ import (
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/cpagent"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/store"
 	"github.com/OraCache/oracache/shardraft"
 	"go.etcd.io/raft/v3"
@@ -128,12 +129,16 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	metrics := cpmetrics.NewRegistry()
+	metrics.RegisterProcessCollectors()
+	raftMetrics := newRaftMetrics(metrics.Prometheus(), n)
 	n.inst, err = shardraft.NewInstance(shardraft.Config{
 		RegionID: cfg.Region, ShardID: cfg.ShardID, GroupID: cfg.GroupID,
 		PeerID: cfg.PeerID, Peers: raftPeers, ReadMode: cfg.ReadMode,
 		TickInterval: cfg.TickInterval, ElectionTicks: cfg.ElectionTicks,
 		RequestTimeout: cfg.RequestTimeout, SnapshotEntries: cfg.SnapshotEntries,
-		Logger: &raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)},
+		Observer: raftMetrics,
+		Logger:   &raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)},
 	}, NewStateMachine(n.store), transport)
 	if err != nil {
 		return nil, err
@@ -170,16 +175,17 @@ func New(cfg Config) (*Node, error) {
 
 	mux := http.NewServeMux()
 	mux.Handle("/raft", n.inst.RaftHandler())
+	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(n.inst.Status())
 	})
 	n.httpSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	serverOptions := []grpc.ServerOption{grpc.MaxRecvMsgSize(16 << 20)}
+	interceptors := []grpc.UnaryServerInterceptor{cpmetrics.CacheRPCInterceptor(metrics.Prometheus())}
 	if n.agent != nil {
-		serverOptions = append(serverOptions, grpc.UnaryInterceptor(n.requireMasterForWrites))
+		interceptors = append(interceptors, n.requireMasterForWrites)
 	}
-	n.grpcSrv = grpc.NewServer(serverOptions...)
+	n.grpcSrv = grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.ChainUnaryInterceptor(interceptors...))
 	pb.RegisterCacheGatewayServer(n.grpcSrv, shardraft.GatewayServer(n.inst))
 	return n, nil
 }
@@ -226,7 +232,7 @@ func (n *Node) requireMasterForWrites(ctx context.Context, req any, info *grpc.U
 
 // PartitionStatuses implements cpagent.StatusProvider with the actual status.
 func (n *Node) PartitionStatuses(context.Context) ([]*controlplanev1.PartitionStatus, error) {
-	s := n.inst.Status()
+	s := n.inst.HeartbeatStatus()
 	ps := &controlplanev1.PartitionStatus{
 		PartitionId:  s.ShardID,
 		Role:         protoRole(s.Role),

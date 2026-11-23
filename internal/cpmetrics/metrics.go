@@ -1,10 +1,4 @@
-// Package cpmetrics реализует минимальный Prometheus text-exposition реестр
-// для метрик Control Plane и Gateway.
-//
-// Реестр намеренно не тянет внешних зависимостей: экспонируемые метрики CP —
-// несколько счётчиков и gauges, а формат exposition стабилен и прост. Если
-// позже понадобятся гистограммы или pull-клиенты, реестр заменяется на
-// prometheus/client_golang без изменения вызывающего кода.
+// Package cpmetrics exposes the established Control Plane metrics alongside standard Prometheus collectors.
 package cpmetrics
 
 import (
@@ -18,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
 )
 
 // Метрики Control Plane. Имена фиксируются: меняются только через отдельное
@@ -71,10 +68,11 @@ type series struct {
 
 // Metrics — потокобезопасный реестр метрик.
 type Metrics struct {
-	mu       sync.Mutex
-	metadata map[string]metricMeta
-	counters map[series]uint64
-	gauges   map[series]float64
+	prometheus *prometheus.Registry
+	mu         sync.Mutex
+	metadata   map[string]metricMeta
+	counters   map[series]uint64
+	gauges     map[series]float64
 }
 
 // New создаёт реестр с зарегистрированными метриками Control Plane.
@@ -90,9 +88,10 @@ func New() *Metrics {
 // NewRegistry creates an empty registry.
 func NewRegistry() *Metrics {
 	return &Metrics{
-		metadata: make(map[string]metricMeta),
-		counters: make(map[series]uint64),
-		gauges:   make(map[series]float64),
+		prometheus: prometheus.NewRegistry(),
+		metadata:   make(map[string]metricMeta),
+		counters:   make(map[series]uint64),
+		gauges:     make(map[series]float64),
 	}
 }
 
@@ -273,6 +272,15 @@ func (m *Metrics) render(ctx context.Context, w io.Writer) error {
 			if _, err := fmt.Fprintf(w, "%s%s %s\n", name, key.labels, formatFloat(gauges[key])); err != nil {
 				return err
 			}
+		}
+	}
+	families, err := m.prometheus.Gather()
+	if err != nil {
+		return fmt.Errorf("gather Prometheus collectors: %w", err)
+	}
+	for _, family := range families {
+		if _, err := expfmt.MetricFamilyToText(w, family); err != nil {
+			return fmt.Errorf("encode metric family %s: %w", family.GetName(), err)
 		}
 	}
 	return nil
