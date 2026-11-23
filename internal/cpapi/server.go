@@ -104,6 +104,7 @@ type Server struct {
 	nodeTTL           time.Duration
 	startedAt         time.Time
 	minimumRevision   uint64
+	masterReadsOnly   bool
 	metrics           *cpmetrics.Metrics
 }
 
@@ -307,6 +308,9 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 	if req.GetKnownRevision() == snapshot.Revision && (!gateway || warmingUp) {
 		s.metrics.ConfigPull(cpmetrics.PullUnchanged)
 		return &controlplanev1.GetConfigResponse{Revision: snapshot.Revision}, nil
+	}
+	if gateway && s.masterReadsOnly {
+		restrictRegionalReads(snapshot.Config)
 	}
 	response := &controlplanev1.GetConfigResponse{
 		Revision: snapshot.Revision,

@@ -153,21 +153,27 @@ func (s *EtcdStore) LiveConfig(ctx context.Context, _ time.Time, ttl time.Durati
 	if ttl <= 0 {
 		return Snapshot{}, fmt.Errorf("statestore: node TTL must be positive")
 	}
+	_, live, err := s.DesiredAndLive(ctx)
+	return live, err
+}
+
+// DesiredAndLive returns both views from one linearizable read.
+func (s *EtcdStore) DesiredAndLive(ctx context.Context) (Snapshot, Snapshot, error) {
 	ctx, cancel := etcdContext(ctx)
 	defer cancel()
 	state, err := s.readState(ctx, true)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, Snapshot{}, err
 	}
 	heartbeats := make(map[string]Heartbeat, len(state.heartbeats))
 	for _, kv := range state.heartbeats {
 		heartbeat, err := decodeEtcdHeartbeat(kv.Value)
 		if err != nil {
-			return Snapshot{}, err
+			return Snapshot{}, Snapshot{}, err
 		}
 		heartbeats[heartbeat.NodeID] = heartbeat
 	}
-	return projectLiveConfig(state.snapshot, func(node cpconfig.Node) replicaHeartbeat {
+	return state.snapshot, projectLiveConfig(state.snapshot, func(node cpconfig.Node) replicaHeartbeat {
 		receipt, recorded := state.receipts[node.ID]
 		received := recorded && receipt.Region == node.Region
 		heartbeat, hasLease := heartbeats[node.ID]

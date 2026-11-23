@@ -150,7 +150,7 @@ func run(listen, metricsListen string, options storeOptions, logger *slog.Logger
 		return fmt.Errorf("gRPC listen: %w", err)
 	}
 	defer listener.Close()
-	api := cpapi.New(store, cpapi.WithLogger(logger), cpapi.WithNodeTTL(options.nodeTTL), cpapi.WithMinimumRevision(options.minimumRevision))
+	api := cpapi.New(store, cpapi.WithLogger(logger), cpapi.WithNodeTTL(options.nodeTTL), cpapi.WithMinimumRevision(options.minimumRevision), cpapi.WithMasterReadsOnly(options.backend == "etcd"))
 	tlsConfig, err := cplink.TLSFromEnv("ORACACHE_CP", true)
 	if err != nil {
 		return err

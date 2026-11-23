@@ -32,6 +32,7 @@ func (s *EtcdStore) RecoverConfig(ctx context.Context, revision uint64) error {
 		clientv3.OpPut(s.configKey(), string(value)),
 		clientv3.OpDelete(s.heartbeatPrefix(), clientv3.WithPrefix()),
 		clientv3.OpDelete(s.receiptsKey()),
+		clientv3.OpDelete(s.prefix+"/controller/", clientv3.WithPrefix()),
 	).Commit()
 	if err != nil {
 		return fmt.Errorf("commit recovered config: %w", err)

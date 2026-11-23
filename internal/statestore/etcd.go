@@ -107,20 +107,9 @@ func (s *EtcdStore) ApplyConfig(ctx context.Context, config *cpconfig.Config) er
 			return err
 		}
 
-		compares := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(s.configKey()), "=", state.configMod)}
-		ops := []clientv3.Op{clientv3.OpPut(s.configKey(), string(value))}
-		pruned := pruneReceipts(state.receipts, config)
-		if pruned {
-			op, err := putReceipts(s.receiptsKey(), state.receipts)
-			if err != nil {
-				return err
-			}
-			ops = append(ops, op)
-		}
-		// A heartbeat may record a receipt for a departing node between the
-		// read and the commit, even when no receipt needed pruning at the read.
-		if pruned || removesNodeRegion(state.snapshot.Config, config) {
-			compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.receiptsKey()), "=", state.receiptsMod))
+		compares, ops, err := s.configPublication(state, config, value)
+		if err != nil {
+			return err
 		}
 		result, err := s.client.Txn(ctx).If(compares...).Then(ops...).Commit()
 		if err != nil {
