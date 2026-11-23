@@ -45,6 +45,9 @@ func Validate(current *cpconfig.Config, plan scheduler.Plan) (bool, error) {
 		for _, id := range candidate.ReplicaNodeIDs {
 			was, _ := current.NodeByID(id)
 			will, _ := next.NodeByID(id)
+			if (was.State == cpconfig.NodeStateDraining) != (will.State == cpconfig.NodeStateDraining) {
+				return false, fmt.Errorf("%s partition %d node %s: changing drain status requires a confirmed Raft transition", candidate.Region, candidate.PartitionID, id)
+			}
 			if was.Address != will.Address {
 				return false, fmt.Errorf("%s partition %d node %s: endpoint change requires confirmation of Raft identity",
 					candidate.Region, candidate.PartitionID, id)
@@ -55,6 +58,18 @@ func Validate(current *cpconfig.Config, plan scheduler.Plan) (bool, error) {
 		if _, found := current.Assignment(candidate.Region, candidate.PartitionID); !found {
 			return false, membershipRequired(candidate)
 		}
+	}
+	recalculated, err := scheduler.Calculate(current, scheduler.Input{Regions: next.Regions, Nodes: next.Nodes, Policy: plan.Policy})
+	if err != nil {
+		return false, fmt.Errorf("validate placement policy: %w", err)
+	}
+	if len(recalculated.Unsatisfied) > 0 {
+		first := recalculated.Unsatisfied[0]
+		return false, fmt.Errorf("%s partition %d: proposed topology violates policy (%s)", first.Region, first.Partition, first.Reason)
+	}
+	if len(recalculated.Changes) > 0 {
+		first := recalculated.Changes[0]
+		return false, fmt.Errorf("%s partition %d: proposed topology violates placement policy", first.Region, first.Partition)
 	}
 	if sameStaticConfig(current, next) {
 		return false, nil

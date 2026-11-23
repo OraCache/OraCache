@@ -62,17 +62,22 @@ type leaderObservation struct {
 //
 // Router нельзя копировать после первого использования.
 type Router struct {
-	region string
-	mu     sync.Mutex
-	cur    atomic.Pointer[snapshot]
+	region            string
+	masterRegionReads bool
+	mu                sync.Mutex
+	cur               atomic.Pointer[snapshot]
 }
 
 // NewRouter создаёт router для одного локального региона. Пустой регион недопустим.
-func NewRouter(region string) (*Router, error) {
+func NewRouter(region string, options ...RouterOption) (*Router, error) {
 	if region == "" {
 		return nil, fmt.Errorf("%w: empty region", ErrUnknownRegion)
 	}
-	return &Router{region: region}, nil
+	router := &Router{region: region}
+	for _, option := range options {
+		option(router)
+	}
+	return router, nil
 }
 
 // Region возвращает локальный регион, который обслуживает router.
@@ -104,6 +109,7 @@ func (r *Router) Apply(cfg *cpconfig.Config) error {
 			return fmt.Errorf("%w: have %d, got %d", ErrPartitionCountChanged, old.partitionCount, cfg.PartitionCount)
 		}
 	}
+	r.restrictReads(next)
 	r.cur.Store(next)
 	return nil
 }
@@ -154,6 +160,7 @@ func (r *Router) applyView(cfg *cpconfig.Config, restored *cpconfig.Saved, now t
 			next.write[id] = route.forOperation(true)
 		}
 	}
+	r.restrictReads(next)
 	if disk != nil {
 		if err := disk.Save(next.checkpoint(cfg)); err != nil {
 			return fmt.Errorf("persist gateway checkpoint: %w", err)

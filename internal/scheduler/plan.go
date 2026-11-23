@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -42,11 +43,12 @@ type Constraint struct {
 }
 
 type Plan struct {
-	BaseRevision  uint64           `json:"base_revision"`
-	Proposed      *cpconfig.Config `json:"proposed"`
-	Changes       []Change         `json:"changes"`
-	StaticChanges []string         `json:"static_changes"`
-	Unsatisfied   []Constraint     `json:"unsatisfied"`
+	Policy        map[string]Policy `json:"policy"`
+	BaseRevision  uint64            `json:"base_revision"`
+	Proposed      *cpconfig.Config  `json:"proposed"`
+	Changes       []Change          `json:"changes"`
+	StaticChanges []string          `json:"static_changes"`
+	Unsatisfied   []Constraint      `json:"unsatisfied"`
 }
 
 // Calculate maximizes feasible assignments first, then retained replicas.
@@ -69,7 +71,11 @@ func Calculate(current *cpconfig.Config, input Input) (Plan, error) {
 	}).Clone()
 	slices.SortFunc(proposed.Regions, func(a, b cpconfig.Region) int { return cmp.Compare(a.ID, b.ID) })
 	slices.SortFunc(proposed.Nodes, func(a, b cpconfig.Node) int { return cmp.Compare(a.ID, b.ID) })
-	plan := Plan{BaseRevision: current.Revision, Proposed: proposed}
+	plan := Plan{BaseRevision: current.Revision, Proposed: proposed, Policy: maps.Clone(input.Policy)}
+	for region, policy := range plan.Policy {
+		policy.MaxReplicas = maps.Clone(policy.MaxReplicas)
+		plan.Policy[region] = policy
+	}
 	if err := validateInventory(proposed, input.Policy); err != nil {
 		return Plan{}, err
 	}

@@ -57,6 +57,7 @@ func TestStaticTopologyController(t *testing.T) {
 		compose("down", "--volumes", "--remove-orphans")
 	})
 	compose("up", "-d", "etcd-1", "etcd-2", "etcd-3", "cp-region-a", "cp-region-b", "controller-1", "controller-2")
+	waitEtcdQuorum(t, composeArgs)
 	compose("run", "--rm", "--no-deps", "bootstrap")
 	compose("up", "-d", "node-1", "node-2", "node-3", "api-gateway")
 	const prefix = "/runtime"
@@ -212,6 +213,32 @@ func TestStaticTopologyController(t *testing.T) {
 	if err != nil || json.Unmarshal(value, &result) != nil || result.Revision != 2 || result.Changed {
 		t.Fatalf("new Controller no-op result = %s, %v", value, err)
 	}
+	afterFailover, err := cp.Desired(t.Context())
+	if err != nil || afterFailover.Revision != 2 {
+		t.Fatalf("standby read latest config: %v", err)
+	}
+	afterFailover.Nodes[1].Zone = "zone-two"
+	change, err := json.Marshal(scheduler.Input{Nodes: afterFailover.Nodes, Policy: map[string]scheduler.Policy{"region-a": {RF: 3}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextPlan, err := operator("plan", string(change))
+	if err != nil {
+		t.Fatalf("plan under new Controller: %v", err)
+	}
+	value, err = operator("apply", string(nextPlan))
+	if err != nil || json.Unmarshal(value, &result) != nil || result.Revision != 3 || !result.Changed {
+		t.Fatalf("new Controller publication: %s, %v", value, err)
+	}
+	currentElection, err := client.Get(t.Context(), prefix+"/controller/election/", clientv3.WithFirstCreate()...)
+	if err != nil || len(currentElection.Kvs) != 1 {
+		t.Fatalf("current election: %v, %v", currentElection, err)
+	}
+	leader := currentElection.Kvs[0]
+	fence := statestore.ElectionFence{Key: string(leader.Key), Revision: leader.CreateRevision, Lease: clientv3.LeaseID(leader.Lease)}
+	if err := store.CommitIntent(t.Context(), late, mod, fence, pendingKey, stale.Header.Revision, prefix+"/test/result", "{}"); !errors.Is(err, statestore.ErrPublicationConflict) {
+		t.Fatalf("current Controller could publish with stale snapshot CAS: %v", err)
+	}
 	beforeExpiry, err := cp.Status(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -219,10 +246,10 @@ func TestStaticTopologyController(t *testing.T) {
 	compose("stop", "-t", "0", "node-1", "node-2", "node-3")
 	eventually(t, 12*time.Second, func() bool {
 		state, err := cp.Status(t.Context())
-		return err == nil && state.Revision == 2 && len(state.Differences) == 1 && len(state.Differences[0].ObservedReady) == 0
+		return err == nil && state.Revision == 3 && len(state.Differences) == 1 && len(state.Differences[0].ObservedReady) == 0
 	})
-	if beforeExpiry.Revision != 2 {
+	if beforeExpiry.Revision != 3 {
 		t.Fatal("revision changed before expiry")
 	}
-	t.Log("both APIs and Gateway served revision 2; expired lease fenced the old Controller, retry retained revision 2, and heartbeat expiry changed only live-view")
+	t.Log("both APIs and Gateway served revision 2; expired lease fenced the old Controller, retry retained revision 2, and the standby published revision 3, stale snapshot CAS failed, and heartbeat expiry changed only live-view")
 }

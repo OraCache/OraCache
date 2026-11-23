@@ -50,7 +50,7 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
-	router, err := gateway.NewRouter(*region)
+	router, err := gateway.NewRouter(*region, gateway.WithMasterRegionReads())
 	if err != nil {
 		logger.Error("create router", "region", *region, "error", err)
 		os.Exit(1)
