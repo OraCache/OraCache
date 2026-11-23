@@ -293,3 +293,19 @@ func TestColdGatewayRequiresFreshCPForWritesAndKeepsTermFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGatewayKeepsPublishedMapWhenCheckpointWriteFails(t *testing.T) {
+	router := newRouter(t)
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatal(err)
+	}
+	disk := cpconfig.Disk{Path: filepath.Join(t.TempDir(), "missing-parent", "latest.json"),
+		Cluster: "test", Region: "eu", Client: "gateway/a", MaxAge: time.Hour}
+	poller := gateway.NewPoller(configClientFunc(func(context.Context, *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
+		return fullResponse(2), nil
+	}), router, "a")
+	poller.Disk = &disk
+	if err := poller.Refresh(t.Context()); err == nil || router.Revision() != 1 {
+		t.Fatalf("config was published without a durable checkpoint, revision %d, error %v", router.Revision(), err)
+	}
+}

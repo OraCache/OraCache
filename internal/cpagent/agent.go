@@ -102,13 +102,13 @@ type Agent struct {
 	region   string
 	instance string
 
-	client   controlplanev1.ControlPlaneAPIClient
-	statuses StatusProvider
-	holder   *cpconfig.Holder
-	disk     *cpconfig.Disk
-	cold     atomic.Bool
-	clock    Clock
-	log      *slog.Logger
+	client    controlplanev1.ControlPlaneAPIClient
+	statuses  StatusProvider
+	holder    *cpconfig.Holder
+	disk      *cpconfig.Disk
+	confirmed atomic.Pointer[cpconfig.Config]
+	clock     Clock
+	log       *slog.Logger
 
 	heartbeatInterval   time.Duration
 	heartbeatFollowHint bool
@@ -164,7 +164,7 @@ func New(opts Options) (*Agent, error) {
 	if opts.DisableJitter {
 		jitterFraction = 0
 	}
-	return &Agent{
+	agent := &Agent{
 		nodeID:              opts.NodeID,
 		region:              opts.Region,
 		instance:            opts.Instance,
@@ -180,7 +180,9 @@ func New(opts Options) (*Agent, error) {
 		rpcTimeout:          opts.RPCTimeout,
 		jitterFraction:      jitterFraction,
 		pullNow:             make(chan struct{}, 1),
-	}, nil
+	}
+	agent.confirmed.Store(opts.Holder.Current())
+	return agent, nil
 }
 
 // Config возвращает last-known-good snapshot или nil, если он ещё не применён.
@@ -194,10 +196,7 @@ func (a *Agent) Confirmed() bool { return a.ConfirmedConfig() != nil }
 
 // ConfirmedConfig returns the configuration available for write authorization.
 func (a *Agent) ConfirmedConfig() *cpconfig.Config {
-	if a.cold.Load() {
-		return nil
-	}
-	return a.Config()
+	return a.confirmed.Load()
 }
 
 // Run запускает циклы heartbeat и config pull и блокируется до отмены ctx.
@@ -322,7 +321,7 @@ func (a *Agent) sendHeartbeat(ctx context.Context) (time.Duration, error) {
 func (a *Agent) pullConfig(ctx context.Context) error {
 	floor := a.holder.Revision()
 	known := floor
-	if a.cold.Load() {
+	if floor > 0 && !a.Confirmed() {
 		known = 0
 	}
 	req := &controlplanev1.GetConfigRequest{
@@ -366,7 +365,7 @@ func (a *Agent) pullConfig(ctx context.Context) error {
 	} else if err := a.holder.Apply(next); err != nil {
 		return fmt.Errorf("get config: apply config: %w", err)
 	}
-	a.cold.Store(false)
+	a.confirmed.Store(a.holder.Current())
 	a.save(ctx)
 	a.log.Info("cp config applied",
 		"node_id", a.nodeID,

@@ -62,6 +62,7 @@ func TestEtcdHARuntime(t *testing.T) {
 	})
 	addr := func(service, port string) string { return compose("port", service, port) }
 	compose("up", "-d", "etcd-1", "etcd-2", "etcd-3", "cp-region-a", "cp-region-b")
+	waitEtcdQuorum(t, composeArgs)
 	compose("run", "--rm", "--no-deps", "bootstrap")
 	apiA, apiB := addr("cp-region-a", "28081"), addr("cp-region-b", "28081")
 	statusB := addr("cp-region-b", "9464")
@@ -211,6 +212,16 @@ func TestEtcdHARuntime(t *testing.T) {
 	t.Log("loss of the Raft majority rejected strict reads and writes with the Control Plane available")
 
 	testRuntimeRestore(t, backup, project)
+}
+
+func waitEtcdQuorum(t *testing.T, composeArgs []string) {
+	t.Helper()
+	eventually(t, 30*time.Second, func() bool {
+		ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+		defer cancel()
+		args := append(append([]string(nil), composeArgs...), "exec", "-T", "etcd-1", "etcdctl", "--command-timeout=2s", "endpoint", "health")
+		return exec.CommandContext(ctx, "docker", args...).Run() == nil
+	})
 }
 
 func freshGatewaySnapshot(metrics string) bool {
