@@ -198,6 +198,8 @@ for node in node-1 node-2 node-3; do
   if [[ "$node" != "$leader" ]]; then followers+=("$node"); fi
 done
 before=$(await_query "$last_ok" 'length == 1' | jq '.[0].value | tonumber')
+gateway_put_failures='oracache_cache_rpc_total{job="api-gateway",operation="put",outcome="none",grpc_code=~"Canceled|DeadlineExceeded|Unavailable"}'
+failures_before=$(await_query "$gateway_put_failures" 'length == 3' | jq 'map(.value | tonumber) | add')
 paused=("${followers[@]}")
 compose pause "${followers[@]}" >&2
 if result=$(rpc put majority:key during 2>&1); then
@@ -205,13 +207,18 @@ if result=$(rpc put majority:key during 2>&1); then
   exit 1
 fi
 printf 'PUT with 3s deadline => %s\n' "$result"
-[[ "$result" == *"code = DeadlineExceeded"* || "$result" == *"code = Unavailable"* ]]
+if [[ "$result" != *"code = DeadlineExceeded"* && "$result" != *"code = Unavailable"* ]]; then
+  printf 'Expected DeadlineExceeded or Unavailable from the client\n' >&2
+  exit 1
+fi
 await_query 'sum(up{job="storage-node"})' '.[0].value == "1"' >/dev/null
 await_query "$cp_up" '.[0].value == "1"' >/dev/null
 await_query "$last_ok" ".[0].value | tonumber > $before" >/dev/null
 await_query "$leader_term" 'length == 0' >/dev/null
 await_query 'oracache_raft_follower_lag_entries' 'length == 0' >/dev/null
-await_query 'oracache_cache_rpc_total{job="api-gateway",operation="put",grpc_code=~"DeadlineExceeded|Unavailable"} > 0' 'length > 0' >/dev/null
+# The client's deadline may cancel the Gateway handler. Its server-side
+# counter can record Canceled while the client observes DeadlineExceeded.
+await_query "$gateway_put_failures > 0" "map(.value | tonumber) | (add // 0) > $failures_before" >/dev/null
 await_query 'oracache_raft_transport_send_errors_total > 0' 'length > 0' >/dev/null
 await_query 'oracache_gateway_partitions_without_route{operation="put"}' '.[0].value == "1"' >/dev/null
 compose unpause "${followers[@]}" >&2
@@ -219,4 +226,5 @@ paused=()
 await_query "$all_up" '.[0].value == "5"' >/dev/null
 next=$(await_query "$leader_term" 'length == 1' | jq -er '.[0].labels.node_id')
 await_route "$next"
-expect_rpc '.status == "PUT_STATUS_OK"' put majority-recovery:key after --expected-rev=0
+printf 'PUT after restoring the majority\n'
+expect_rpc ".status == \"PUT_STATUS_OK\" and .servedBy.instance == \"$next\"" put majority-recovery:key after --expected-rev=0
