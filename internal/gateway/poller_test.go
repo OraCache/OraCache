@@ -309,3 +309,33 @@ func TestGatewayKeepsPublishedMapWhenCheckpointWriteFails(t *testing.T) {
 		t.Fatalf("config was published without a durable checkpoint, revision %d, error %v", router.Revision(), err)
 	}
 }
+
+func TestRestrictedGatewayDoesNotRestoreFollowerReadRoutes(t *testing.T) {
+	router, err := gateway.NewRouter("us", gateway.WithMasterRegionReads())
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk := cpconfig.Disk{Path: filepath.Join(t.TempDir(), "latest.json"), Cluster: "test", Region: "us", Client: "gateway/b", MaxAge: time.Hour}
+	if err := disk.Save(cpconfig.Saved{Config: cpconfigtest.Config(2), AcceptedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	poller := gateway.NewPoller(configClientFunc(func(context.Context, *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
+		return fullResponse(2), nil
+	}), router, "b")
+	poller.Disk = &disk
+	if err := poller.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.GetLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("restored follower read route: %v", err)
+	}
+	if err := poller.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.GetLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("live follower read route: %v", err)
+	}
+	if _, err := router.WriteLeader(0); err != nil {
+		t.Fatalf("master write route: %v", err)
+	}
+}

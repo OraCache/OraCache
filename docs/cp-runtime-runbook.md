@@ -29,3 +29,25 @@ ORACACHE_CP_IMAGE=oracache-runtime:local go test -tags=integration -count=1 -v .
 2. Остановите CP API и Controller и изолируйте восстанавливаемый кластер от действующего. Восстановите на чистые тома тем же backup с `etcdutl snapshot restore backup.db --name <member> --data-dir <new-dir> --initial-cluster <members> --initial-advertise-peer-urls <url> --initial-cluster-token <new-token> --bump-revision <delta> --mark-compacted`. Выберите bump выше прежних наблюдаемых etcd revision. Проверьте имена, права и кворум до подключения клиентов.
 3. Сверьте восстановленную топологию с живым статическим Raft. Если безопасный состав и master-роль подтвердить нельзя, сохраните изоляцию. Выберите `NEW_CONFIG_REVISION` выше ревизии backup и всех прикладных ревизий до отказа. Выполните `cp-api -store etcd -etcd-endpoints "$ETCDCTL_ENDPOINTS" -etcd-prefix "$CP_PREFIX" -recover-config-revision "$NEW_CONFIG_REVISION"`. Команда публикует новую ревизию и удаляет восстановленные heartbeat и receipts в одной транзакции.
 4. Запустите оба API с `-minimum-config-revision "$NEW_CONFIG_REVISION"`. Проверьте readiness, новые heartbeat, revision Gateway, маршруты и строгие GET/PUT. MVCC bump сам по себе не повышает прикладную ревизию. Для клиентов без checkpoint нижняя граница в API входит в процедуру восстановления.
+
+## Статическая топология через Controller
+
+Запустите два процесса `cp-topology serve` с разными `--id`, одним `--etcd-prefix` и одинаковыми endpoints. Controller получает отдельные права на ключи выборов, очередь и результаты, публикацию снимка и очистку receipts при удалении регистрации. Оператору нужны чтение desired/live/результатов и запись ожидающих намерений. Рабочие CP API читают опубликованный снимок. Подключение к etcd использует тот же набор параметров TLS, что и CP API.
+
+```sh
+# inventory.json передаёт регионы/ноды или использует опубликованные при отсутствии полей.
+# Например {"policy":{"region-a":{"rf":3,"distinct_zones":true,"replica_bytes":1048576,"max_replicas":{"node-1":128}}}}
+cp-topology plan --etcd-endpoints "$ETCDCTL_ENDPOINTS" --etcd-prefix "$CP_PREFIX" --file inventory.json > plan.json
+cp-topology validate --etcd-endpoints "$ETCDCTL_ENDPOINTS" --etcd-prefix "$CP_PREFIX" --file plan.json
+cp-topology apply --etcd-endpoints "$ETCDCTL_ENDPOINTS" --etcd-prefix "$CP_PREFIX" --file plan.json
+cp-topology status --etcd-endpoints "$ETCDCTL_ENDPOINTS" --etcd-prefix "$CP_PREFIX"
+```
+
+`dry-run` исполняет тот же расчёт, что и `plan`. Обязательна политика RF для каждого региона. `distinct_zones` исключает ноды без зоны и размещает максимум одну реплику партиции в каждой зоне. `max_replicas` ограничивает число назначений на ноде. При заданных `replica_bytes` и `capacity_bytes` дополнительно используется целая часть их отношения. План с невыполнимыми ограничениями перечисляет затронутые партиции; validate и apply его отклоняют. План перехода состава требует #73/#80. Для уже созданных групп разрешены статические метаданные, например исправление зоны без изменения состава.
+
+При тайм-ауте apply повторите тот же файл. Очередь хранит намерение до атомарной публикации результата. Если состояние изменилось, пересчитайте план от новой ревизии. При disaster recovery очистка очереди и результатов входит в транзакцию восстановления. Оператор после сверки реального Raft формирует новое намерение. Закладывайте очистку исторических результатов по согласованной политике хранения, учитывая окно повторов.
+
+```sh
+docker build -f Dockerfile.cp -t oracache-topology:local .
+ORACACHE_CP_IMAGE=oracache-topology:local go test -tags=integration -count=1 -v ./cmd/cp-api -run '^TestStaticTopologyController$'
+```

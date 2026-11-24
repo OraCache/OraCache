@@ -1,0 +1,18 @@
+# Overlay for the isolated CP runtime fixture.
+x-controller: &controller
+  image: ${ORACACHE_CP_IMAGE:-oracache-runtime:local}
+  environment:
+    ORACACHE_ETCD_TLS_CA: /pki/etcd-ca.pem
+    ORACACHE_ETCD_TLS_CERT: /pki/cp-etcd.pem
+    ORACACHE_ETCD_TLS_KEY: /pki/cp-etcd.key
+  volumes: ["${ORACACHE_TEST_PKI:?set test PKI path}:/pki:ro"]
+  entrypoint: [/cp-topology, serve, "--etcd-endpoints=https://etcd-1:2379,https://etcd-2:2379,https://etcd-3:2379", --etcd-prefix=/runtime, --election-ttl=3]
+services:
+  etcd-1:
+    ports: ["127.0.0.1::2379"]
+  controller-1:
+    <<: *controller
+    command: [--id=controller-1]
+  controller-2:
+    <<: *controller
+    command: [--id=controller-2]
