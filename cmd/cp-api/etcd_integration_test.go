@@ -437,6 +437,7 @@ func attachTestGateway(t *testing.T, client controlplanev1.ControlPlaneAPIClient
 
 func heartbeatAge(t *testing.T, api *cpapi.Server) (float64, bool) {
 	t.Helper()
+	api.RefreshStoreMetrics(t.Context())
 	var metrics bytes.Buffer
 	if err := api.Metrics().Render(&metrics); err != nil {
 		t.Fatal(err)

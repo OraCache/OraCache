@@ -1,10 +1,6 @@
 package cpapi
 
-import (
-	"context"
-
-	"github.com/OraCache/oracache/internal/cpmetrics"
-)
+import "context"
 
 func WithMinimumRevision(revision uint64) Option {
 	return func(s *Server) { s.minimumRevision = revision }
@@ -21,14 +17,6 @@ func (s *Server) Ready(ctx context.Context) bool {
 		return false
 	}
 	return true
-}
-
-func (s *Server) readinessSamples(ctx context.Context) ([]cpmetrics.GaugeSample, error) {
-	sample := cpmetrics.GaugeSample{}
-	if s.Ready(ctx) {
-		sample.Value = 1
-	}
-	return []cpmetrics.GaugeSample{sample}, nil
 }
 
 func (s *Server) storeError(ctx context.Context, operation string, err error) {

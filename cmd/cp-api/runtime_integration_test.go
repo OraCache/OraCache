@@ -19,6 +19,7 @@ import (
 	gwv1 "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/cpapi"
 	"github.com/OraCache/oracache/internal/cplink"
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -117,6 +118,19 @@ func TestEtcdHARuntime(t *testing.T) {
 	t.Setenv("ORACACHE_CP_TLS_CA", filepath.Join(pki, "cp-ca.pem"))
 	t.Log("both regional APIs served revision 1; mTLS rejected untrusted peers and unauthorized heartbeat identities")
 
+	const receipt = "\n" + cpmetrics.HeartbeatAge + `{node_id="node-1",region="region-a"} `
+	hasLocalCounters := func(metrics string) bool {
+		return strings.Contains(metrics, "\n"+cpmetrics.HeartbeatTotal+`{result="accepted"} `) &&
+			strings.Contains(metrics, "\n"+cpmetrics.ConfigPullTotal+`{result="served"} `)
+	}
+	cpScrape := func() (int, string) { return runtimeHTTPWithin(statusB, "/metrics", time.Second) }
+	cpMetricsReady := func() bool {
+		code, metrics := cpScrape()
+		return code == 200 && hasLocalCounters(metrics) && strings.Contains(metrics, "\noracache_cp_config_ready 1\n") &&
+			strings.Contains(metrics, receipt)
+	}
+	eventually(t, 10*time.Second, cpMetricsReady)
+
 	compose("up", "-d", "node-1", "node-2", "node-3", "api-gateway")
 	dataAddr, gwStatus := addr("api-gateway", "28080"), addr("api-gateway", "9466")
 	conn, err := grpc.NewClient(dataAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -180,12 +194,15 @@ func TestEtcdHARuntime(t *testing.T) {
 	eventually(t, 15*time.Second, func() bool {
 		live, _ := runtimeHTTP(statusB, "/healthz")
 		ready, _ := runtimeHTTP(statusB, "/readyz")
-		_, metrics := runtimeHTTP(statusB, "/metrics")
+		code, metrics := cpScrape()
 		_, err := nodeB.GetConfig(t.Context(), &cpv1.GetConfigRequest{NodeId: "node-1", Kind: cpv1.AgentKind_AGENT_KIND_STORAGE_NODE})
 		return live == 200 && ready == 503 && status.Code(err) == codes.Unavailable &&
-			strings.Contains(metrics, "oracache_cp_statestore_errors_total") && get() && put("etcd-outage")
+			code == 200 && hasLocalCounters(metrics) &&
+			strings.Contains(metrics, "\noracache_cp_statestore_errors_total{") &&
+			strings.Contains(metrics, "\noracache_cp_config_ready 0\n") &&
+			!strings.Contains(metrics, "\n"+cpmetrics.HeartbeatAge+"{") && get() && put("etcd-outage")
 	})
-	t.Log("etcd quorum loss returned Unavailable and preserved data operations and diagnostics")
+	t.Log("etcd quorum loss returned Unavailable and readiness 503; the one-second metrics scrape returned 200, local counters, config_ready=0 and no heartbeat ages")
 
 	compose("restart", "-t", "0", "api-gateway")
 	gwStatus = addr("api-gateway", "9466")
@@ -201,10 +218,12 @@ func TestEtcdHARuntime(t *testing.T) {
 		t.Fatalf("cold Gateway authorized writes (ready code %d)", ready)
 	}
 	compose("start", "etcd-2")
+	eventually(t, 20*time.Second, cpMetricsReady)
 	eventually(t, 20*time.Second, func() bool {
 		code, _ := runtimeHTTP(gwStatus, "/readyz")
 		return code == 200 && put("recovered")
 	})
+	t.Log("etcd quorum recovery restored config_ready=1 and heartbeat ages within the one-second scrape budget")
 	t.Log("Gateway restored reads from disk, fenced writes across restart, then recovered from live CP")
 
 	compose("stop", "-t", "0", "node-2", "node-3")
@@ -236,7 +255,11 @@ func freshGatewaySnapshot(metrics string) bool {
 }
 
 func runtimeHTTP(address, path string) (int, string) {
-	client := http.Client{Timeout: 6 * time.Second}
+	return runtimeHTTPWithin(address, path, 6*time.Second)
+}
+
+func runtimeHTTPWithin(address, path string, timeout time.Duration) (int, string) {
+	client := http.Client{Timeout: timeout}
 	response, err := client.Get("http://" + address + path)
 	if err != nil {
 		return 0, ""

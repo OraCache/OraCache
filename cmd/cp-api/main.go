@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -30,6 +31,8 @@ import (
 
 const defaultMetricsListen = "127.0.0.1:9464"
 
+const storeMetricsInterval = time.Second
+
 func newServer(store statestore.Store, logger *slog.Logger, opts ...cpapi.Option) (*grpc.Server, *cpapi.Server) {
 	api := cpapi.New(store, append([]cpapi.Option{cpapi.WithLogger(logger)}, opts...)...)
 	return registerServer(api), api
@@ -44,9 +47,9 @@ func registerServer(api *cpapi.Server, options ...grpc.ServerOption) *grpc.Serve
 
 // serveMetrics поднимает /metrics. Ошибка listener'а возвращается, чтобы main
 // завершился с понятным диагнозом, а не потерял endpoint молча.
-func serveMetrics(listen string, api *cpapi.Server, logger *slog.Logger) error {
+func serveMetrics(ctx context.Context, listen string, api *cpapi.Server, logger *slog.Logger) (net.Addr, error) {
 	if listen == "" {
-		return nil
+		return nil, nil
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", api.Metrics().Handler())
@@ -64,16 +67,32 @@ func serveMetrics(listen string, api *cpapi.Server, logger *slog.Logger) error {
 	})
 	metricsListener, err := net.Listen("tcp", listen)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 2 * time.Second}
+	stopClose := context.AfterFunc(ctx, func() { _ = server.Close() })
+	pollCtx, stopPolling := context.WithCancel(ctx)
 	go func() {
-		if err := server.Serve(metricsListener); err != nil {
+		defer stopClose()
+		defer stopPolling()
+		if err := server.Serve(metricsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("metrics server stopped", "address", listen, "error", err)
 		}
 	}()
+	go func() {
+		ticker := time.NewTicker(storeMetricsInterval)
+		defer ticker.Stop()
+		for pollCtx.Err() == nil {
+			api.RefreshStoreMetrics(pollCtx)
+			select {
+			case <-pollCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 	logger.Info("cp-api metrics listening", "address", metricsListener.Addr().String())
-	return nil
+	return metricsListener.Addr(), nil
 }
 
 func main() {
@@ -160,12 +179,11 @@ func run(listen, metricsListen string, options storeOptions, logger *slog.Logger
 		return err
 	}
 	server := registerServer(api, serverOptions...)
-	if err := serveMetrics(metricsListen, api, logger); err != nil {
-		return fmt.Errorf("metrics listen: %w", err)
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if _, err := serveMetrics(ctx, metricsListen, api, logger); err != nil {
+		return fmt.Errorf("metrics listen: %w", err)
+	}
 	go func() {
 		<-ctx.Done()
 		server.GracefulStop()

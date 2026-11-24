@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
@@ -105,6 +106,7 @@ type Server struct {
 	startedAt         time.Time
 	minimumRevision   uint64
 	metrics           *cpmetrics.Metrics
+	storeMetrics      atomic.Pointer[storeMetricsSnapshot]
 }
 
 // New создаёт сервер CP API. store не должен быть nil.
@@ -125,30 +127,13 @@ func New(store statestore.Store, opts ...Option) *Server {
 	}
 	s.startedAt = s.clock.Now()
 	s.metrics.Describe("oracache_cp_statestore_errors_total", "counter", "StateStore operation failures.")
-	s.metrics.RegisterGaugeFunc("oracache_cp_config_ready", "Whether an authoritative configuration is available.", s.readinessSamples)
-	s.metrics.RegisterGaugeFunc(cpmetrics.HeartbeatAge, "Seconds since the CP API received the last heartbeat from a configured node.", s.heartbeatAges)
+	s.metrics.RegisterGaugeFunc("oracache_cp_config_ready", "Whether the latest StateStore metrics poll confirmed an authoritative configuration.", s.readinessSamples)
+	s.metrics.RegisterGaugeFunc(cpmetrics.HeartbeatAge, "Seconds since the CP API received the last heartbeat from a configured node.", s.heartbeatAgeSamples)
 	return s
 }
 
 // Metrics возвращает реестр метрик сервера для экспозиции /metrics.
 func (s *Server) Metrics() *cpmetrics.Metrics { return s.metrics }
-
-func (s *Server) heartbeatAges(ctx context.Context) ([]cpmetrics.GaugeSample, error) {
-	receipts, err := s.store.HeartbeatReceipts(ctx)
-	if err != nil {
-		s.storeError(ctx, "heartbeat_receipts", err)
-		return nil, nil // Keep the process-local RPC outcome metrics available.
-	}
-	now := s.clock.Now()
-	samples := make([]cpmetrics.GaugeSample, 0, len(receipts))
-	for _, receipt := range receipts {
-		samples = append(samples, cpmetrics.GaugeSample{
-			Labels: map[string]string{"region": receipt.Region, "node_id": receipt.NodeID},
-			Value:  max(0, now.Sub(receipt.ReceivedAt).Seconds()),
-		})
-	}
-	return samples, nil
-}
 
 // ReportHeartbeat реализует controlplanev1.ControlPlaneAPI. Он сохраняет полный
 // snapshot локальных partition-групп и возвращает текущую revision конфигурации.
