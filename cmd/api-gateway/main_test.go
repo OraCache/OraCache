@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 
 	"github.com/OraCache/oracache/internal/cpconfig/cpconfigtest"
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/gateway"
 )
 
@@ -31,7 +33,7 @@ func testRouter(t *testing.T, region string) *gateway.Router {
 func TestStatusHandlerRoutes(t *testing.T) {
 	t.Parallel()
 	router := testRouter(t, "eu")
-	handler := newStatusHandler(router)
+	handler := newStatusHandler(router, cpmetrics.NewRegistry())
 
 	// До применения конфигурации карты нет.
 	request := httptest.NewRequest(http.MethodGet, "/routes", nil)
@@ -83,7 +85,7 @@ func TestStatusHandlerRoutes(t *testing.T) {
 func TestStatusHandlerHealthz(t *testing.T) {
 	t.Parallel()
 	router := testRouter(t, "eu")
-	handler := newStatusHandler(router)
+	handler := newStatusHandler(router, cpmetrics.NewRegistry())
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -107,7 +109,7 @@ func TestStatusHandlerHealthz(t *testing.T) {
 func TestStatusHandlerMissingRouteMetrics(t *testing.T) {
 	t.Parallel()
 	router := testRouter(t, "us")
-	handler := newStatusHandler(router)
+	handler := newStatusHandler(router, cpmetrics.NewRegistry())
 	assertMissing := func(want map[string]float64) {
 		t.Helper()
 		recorder := httptest.NewRecorder()
@@ -115,7 +117,7 @@ func TestStatusHandlerMissingRouteMetrics(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("metrics status = %d, body = %s", recorder.Code, recorder.Body)
 		}
-		var parser expfmt.TextParser
+		parser := expfmt.NewTextParser(model.LegacyValidation)
 		families, err := parser.TextToMetricFamilies(recorder.Body)
 		if err != nil {
 			t.Fatalf("parse metrics: %v", err)
@@ -159,7 +161,7 @@ func TestStatusHandlerMissingRouteMetrics(t *testing.T) {
 func TestStatusHandlerSlaveRegionRoutesToMaster(t *testing.T) {
 	t.Parallel()
 	router := testRouter(t, "us")
-	handler := newStatusHandler(router)
+	handler := newStatusHandler(router, cpmetrics.NewRegistry())
 	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -200,7 +202,7 @@ func TestServeStatusServesRoutes(t *testing.T) {
 	}
 	defer listener.Close()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	stop := serveStatus(listener, router, "eu", logger)
+	stop := serveStatus(listener, router, cpmetrics.NewRegistry(), "eu", logger)
 	defer stop()
 
 	client := &http.Client{Timeout: 5 * time.Second}

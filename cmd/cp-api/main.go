@@ -51,6 +51,7 @@ func serveMetrics(ctx context.Context, listen string, api *cpapi.Server, logger 
 	if listen == "" {
 		return nil, nil
 	}
+	api.Metrics().RegisterProcessCollectors()
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", api.Metrics().Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

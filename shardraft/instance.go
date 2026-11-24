@@ -30,8 +30,9 @@ type request struct {
 }
 type pendingRequest struct {
 	request
-	readIndex uint64
-	readReady bool
+	readIndex   uint64
+	readReady   bool
+	readStarted time.Time
 }
 type outgoing struct {
 	data     []byte
@@ -61,12 +62,14 @@ type Instance struct {
 	mu         sync.Mutex
 	lifecycle  int // 0 constructed, 1 running, 2 stopped
 	stopOnce   sync.Once
-	observed   atomic.Value
+	observed   atomic.Pointer[Status]
+	heartbeat  atomic.Pointer[Status]
 	// Fields below belong exclusively to Run.
 	pending       map[requestID]*pendingRequest
 	sequence      uint64
 	applied       uint64
 	snapshotIndex uint64
+	lastIndex     uint64
 	conf          raftpb.ConfState
 }
 
@@ -115,17 +118,28 @@ func NewInstance(cfg Config, cache StateMachine, transport Transport) (*Instance
 	return n, nil
 }
 
-func (n *Instance) Status() Status { return n.observed.Load().(Status) }
+// Status returns the latest diagnostic snapshot, including in-progress apply.
+func (n *Instance) Status() Status { return *n.observed.Load() }
 
-func (n *Instance) publish(running bool, lastError string) {
+// HeartbeatStatus returns the snapshot from the end of a Raft owner iteration.
+// It preserves the readiness observation used by Control Plane routing.
+func (n *Instance) HeartbeatStatus() Status { return *n.heartbeat.Load() }
+
+func (n *Instance) snapshot(running bool, lastError string) *Status {
 	s := n.raw.BasicStatus()
-	n.observed.Store(Status{
+	return &Status{
 		RegionID: n.cfg.RegionID, ShardID: n.cfg.ShardID, GroupID: n.cfg.GroupID, PeerID: n.cfg.PeerID,
 		Role: s.RaftState.String(), Term: s.Term, LeaderID: s.Lead,
-		CommitIndex: s.Commit, AppliedIndex: n.applied, SnapshotIndex: n.snapshotIndex,
+		CommitIndex: s.Commit, AppliedIndex: n.applied, SnapshotIndex: n.snapshotIndex, LastIndex: n.lastIndex,
 		Ready:   running && s.Lead != 0 && n.applied >= s.Commit,
 		Running: running, LastError: lastError,
-	})
+	}
+}
+
+func (n *Instance) publish(running bool, lastError string) {
+	s := n.snapshot(running, lastError)
+	n.observed.Store(s)
+	n.heartbeat.Store(s)
 }
 
 // Run blocks until ctx is cancelled, Close is called or a fatal apply error occurs.
@@ -257,6 +271,9 @@ func (n *Instance) sendLoop(ctx context.Context, peer uint64, queue <-chan outgo
 			attempt, cancel := context.WithTimeout(ctx, n.cfg.SendTimeout)
 			err := n.transport.Send(attempt, n.cfg.GroupID, peer, m.data)
 			cancel()
+			if err != nil && ctx.Err() == nil && n.cfg.Observer != nil {
+				n.cfg.Observer.RecordSendError()
+			}
 			select {
 			case n.deliveries <- delivery{to: peer, snapshot: m.snapshot, err: err}:
 			case <-ctx.Done():
@@ -305,6 +322,7 @@ func (n *Instance) accept(r request) {
 	binary.BigEndian.PutUint64(id[8:], n.sequence)
 	n.pending[id] = &pendingRequest{request: r}
 	if read {
+		n.pending[id].readStarted = time.Now()
 		n.raw.ReadIndex(id[:])
 	} else if err := n.raw.Propose(encodeCommand(r.op, id, r.data)); err != nil {
 		delete(n.pending, id)
@@ -336,26 +354,46 @@ func (n *Instance) completeReads() {
 	}
 }
 
+func (n *Instance) observe(stage TimingStage, start time.Time) {
+	if n.cfg.Observer != nil {
+		n.cfg.Observer.ObserveDuration(stage, time.Since(start))
+	}
+}
+
 func (n *Instance) processReady() error {
 	for n.raw.HasReady() {
 		rd := n.raw.Ready()
+		var readStateAt time.Time
+		if len(rd.ReadStates) > 0 {
+			readStateAt = time.Now()
+		}
 		if !raft.IsEmptySnap(rd.Snapshot) {
-			if err := n.cache.Restore(rd.Snapshot.Data); err != nil {
+			n.observed.Store(n.snapshot(true, ""))
+			started := time.Now()
+			err := n.cache.Restore(rd.Snapshot.Data)
+			n.observe(StageRestore, started)
+			if err != nil {
 				return fmt.Errorf("restore checkpoint: %w", err)
 			}
 			if err := n.storage.ApplySnapshot(rd.Snapshot); err != nil {
 				return err
 			}
-			n.applied, n.snapshotIndex = rd.Snapshot.Metadata.Index, rd.Snapshot.Metadata.Index
+			n.applied, n.snapshotIndex, n.lastIndex = rd.Snapshot.Metadata.Index, rd.Snapshot.Metadata.Index, rd.Snapshot.Metadata.Index
 			n.conf = rd.Snapshot.Metadata.ConfState
 		}
 		if err := n.storage.Append(rd.Entries); err != nil {
 			return err
 		}
+		if len(rd.Entries) > 0 {
+			n.lastIndex = rd.Entries[len(rd.Entries)-1].Index
+		}
 		if !raft.IsEmptyHardState(rd.HardState) {
 			if err := n.storage.SetHardState(rd.HardState); err != nil {
 				return err
 			}
+		}
+		if len(rd.CommittedEntries) > 0 {
+			n.observed.Store(n.snapshot(true, ""))
 		}
 		// Marshal before handing data to workers; RawNode messages must not be
 		// marshalled concurrently with subsequent Ready/Advance calls.
@@ -401,7 +439,9 @@ func (n *Instance) processReady() error {
 					if err != nil {
 						return fmt.Errorf("decode committed request: %w", err)
 					}
+					started := time.Now()
 					response, err := n.execute(message)
+					n.observe(StageApply, started)
 					if !expectedApplicationError(err) {
 						return fmt.Errorf("apply entry %d: %w", entry.Index, err)
 					}
@@ -422,12 +462,17 @@ func (n *Instance) processReady() error {
 			var id requestID
 			copy(id[:], state.RequestCtx)
 			if p := n.pending[id]; p != nil {
+				if !p.readReady && n.cfg.Observer != nil {
+					n.cfg.Observer.ObserveDuration(StageReadIndex, readStateAt.Sub(p.readStarted))
+				}
 				p.readReady, p.readIndex = true, state.Index
 			}
 		}
 		n.raw.Advance(rd)
 		if n.applied-n.snapshotIndex >= n.cfg.SnapshotEntries {
+			started := time.Now()
 			data, err := n.cache.Checkpoint()
+			n.observe(StageCheckpoint, started)
 			if err != nil {
 				return fmt.Errorf("checkpoint: %w", err)
 			}

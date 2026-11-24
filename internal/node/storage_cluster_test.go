@@ -6,17 +6,21 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/node"
 	"github.com/OraCache/oracache/shardraft"
+	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func storageListen(t *testing.T) net.Listener {
@@ -49,7 +53,7 @@ func testStandaloneStorageCluster(t *testing.T, mode shardraft.ReadMode) {
 		peers = append(peers, node.Peer{ID: uint64(i + 1), NodeID: fmt.Sprintf("node-%d", i+1), ClientAddr: grpcLis[i].Addr().String(), RaftURL: "http://" + raftLis[i].Addr().String() + "/raft"})
 	}
 	for i := range nodes {
-		n, err := node.New(node.Config{NodeID: peers[i].NodeID, Region: "region-a", GroupID: "standalone-test", PeerID: peers[i].ID, Peers: peers, GRPCListener: grpcLis[i], RaftListener: raftLis[i], ReadMode: mode, Logger: quiet, TickInterval: 20 * time.Millisecond, ElectionTicks: 10})
+		n, err := node.New(node.Config{NodeID: peers[i].NodeID, Region: "region-a", GroupID: "standalone-test", PeerID: peers[i].ID, Peers: peers, GRPCListener: grpcLis[i], RaftListener: raftLis[i], ReadMode: mode, Logger: quiet, TickInterval: 20 * time.Millisecond, ElectionTicks: 10, SnapshotEntries: 4})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,7 +109,16 @@ func testStandaloneStorageCluster(t *testing.T, mode shardraft.ReadMode) {
 		t.Fatalf("expected NOT_LEADER with address %s: %v (details %v)", addr, err, st.Details())
 	}
 	first := leader(-1)
+	before := nodes[first].Status()
 	write(first, "v1")
+	out, err := clients[first].Put(ctx, &pb.PutRequest{Key: "k", ExpectedRev: proto.Uint64(0)})
+	if err != nil || out.GetStatus() != pb.PutStatus_PUT_STATUS_CONFLICT {
+		t.Fatalf("conflicting Put: %v %v", out, err)
+	}
+	eventually(t, "leader metrics reflect committed write", func() bool {
+		return replicaGauge(t, ctx, nodes[first], "oracache_raft_commit_index") > float64(before.CommitIndex) &&
+			replicaGauge(t, ctx, nodes[first], "oracache_storage_keys") == 1
+	})
 	for i, client := range clients {
 		if i == first {
 			continue
@@ -152,4 +165,42 @@ func testStandaloneStorageCluster(t *testing.T, mode shardraft.ReadMode) {
 		t.Fatalf("Get after election: %v %v", got, err)
 	}
 	write(next, "v2")
+	eventually(t, "leader metric and term after election", func() bool {
+		return replicaGauge(t, ctx, nodes[next], "oracache_raft_is_leader") == 1 &&
+			replicaGauge(t, ctx, nodes[next], "oracache_raft_term") > float64(before.Term) &&
+			replicaGauge(t, ctx, nodes[next], "oracache_raft_last_index") >= replicaGauge(t, ctx, nodes[next], "oracache_raft_applied_index") &&
+			replicaGauge(t, ctx, nodes[next], "oracache_raft_snapshot_index") > 0
+	})
+}
+
+func replicaGauge(t *testing.T, ctx context.Context, n *node.Node, name string) float64 {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+n.RaftAddr()+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Timeout: time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("scrape %s: HTTP %s", n.RaftAddr(), resp.Status)
+	}
+	parser := expfmt.NewTextParser(model.LegacyValidation)
+	families, err := parser.TextToMetricFamilies(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := families[name].GetMetric()
+	if len(metrics) != 1 || metrics[0].GetGauge() == nil {
+		t.Fatalf("%s: missing gauge", name)
+	}
+	labels := metrics[0].GetLabel()
+	if len(labels) != 3 || labels[0].GetName() != "node_id" || labels[1].GetName() != "partition" ||
+		labels[1].GetValue() != "0" || labels[2].GetName() != "region" || labels[2].GetValue() != "region-a" {
+		t.Fatalf("%s: unexpected labels %v", name, labels)
+	}
+	return metrics[0].GetGauge().GetValue()
 }

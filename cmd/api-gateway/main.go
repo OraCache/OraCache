@@ -63,6 +63,9 @@ func main() {
 	defer conn.Close()
 
 	poller := gateway.NewPoller(conn, router, *nodeID)
+	metrics := cpmetrics.NewRegistry()
+	metrics.RegisterProcessCollectors()
+	poller.Metrics = gateway.NewMetrics(metrics.Prometheus())
 	poller.Interval = *pollInterval
 	poller.RPCTimeout = *rpcTimeout
 	poller.Logger = logger
@@ -82,7 +85,7 @@ func main() {
 			logger.Error("status listen", "address", *statusListen, "error", err)
 			os.Exit(1)
 		}
-		stopStatus = serveStatus(statusListener, router, *region, logger)
+		stopStatus = serveStatus(statusListener, router, metrics, *region, logger)
 	} else {
 		stopStatus = func() {}
 	}
@@ -98,7 +101,7 @@ func main() {
 			logger.Error("client gRPC listen", "address", *listen, "error", err)
 			os.Exit(1)
 		}
-		done, stopRPC := serveGateway(listener, poller, logger)
+		done, stopRPC := serveGateway(listener, poller, metrics, logger)
 		defer stopRPC()
 		serveErr = done
 		logger.Info("api-gateway client endpoint listening", "address", listener.Addr().String())
@@ -125,9 +128,9 @@ func main() {
 	}
 }
 
-func serveGateway(listener net.Listener, poller *gateway.Poller, logger *slog.Logger) (<-chan error, func()) {
-	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh}
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
+func serveGateway(listener net.Listener, poller *gateway.Poller, metrics *cpmetrics.Metrics, logger *slog.Logger) (<-chan error, func()) {
+	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh, Metrics: poller.Metrics}
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.UnaryInterceptor(cpmetrics.CacheRPCInterceptor(metrics.Prometheus())))
 	gatewayv1.RegisterCacheGatewayServer(server, forwarder)
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
@@ -150,9 +153,8 @@ func serveGateway(listener net.Listener, poller *gateway.Poller, logger *slog.Lo
 }
 
 // newStatusHandler собирает диагностические эндпоинты routing map.
-func newStatusHandler(router *gateway.Router) http.Handler {
+func newStatusHandler(router *gateway.Router, metrics *cpmetrics.Metrics) http.Handler {
 	mux := http.NewServeMux()
-	metrics := cpmetrics.NewRegistry()
 	metrics.RegisterGaugeFunc("oracache_gateway_partitions_without_route", "Partitions without a route in the applied Gateway map.", func(context.Context) ([]cpmetrics.GaugeSample, error) {
 		snapshot := router.Routes()
 		if !snapshot.Ready() {
@@ -169,6 +171,13 @@ func newStatusHandler(router *gateway.Router) http.Handler {
 			return nil, nil
 		}
 		return []cpmetrics.GaugeSample{{Value: max(0, time.Since(accepted).Seconds())}}, nil
+	})
+	metrics.RegisterGaugeFunc("oracache_gateway_config_revision", "Revision of the applied Gateway map.", func(context.Context) ([]cpmetrics.GaugeSample, error) {
+		snapshot := router.Routes()
+		if !snapshot.Ready() {
+			return nil, nil
+		}
+		return []cpmetrics.GaugeSample{{Value: float64(snapshot.Revision)}}, nil
 	})
 	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
@@ -200,8 +209,8 @@ func newStatusHandler(router *gateway.Router) http.Handler {
 
 // serveStatus обслуживает диагностические эндпоинты routing map на переданном
 // listener'е. Возвращает функцию остановки; вызов её безопасен повторно.
-func serveStatus(listener net.Listener, router *gateway.Router, region string, logger *slog.Logger) func() {
-	mux := newStatusHandler(router)
+func serveStatus(listener net.Listener, router *gateway.Router, metrics *cpmetrics.Metrics, region string, logger *slog.Logger) func() {
+	mux := newStatusHandler(router, metrics)
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 2 * time.Second}
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
