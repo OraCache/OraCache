@@ -3,6 +3,7 @@ package gateway_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -242,5 +243,69 @@ func TestPollerAppliesSameRevisionLiveView(t *testing.T) {
 	}
 	if router.Revision() != 1 {
 		t.Fatalf("revision = %d, want 1", router.Revision())
+	}
+}
+
+func TestColdGatewayRequiresFreshCPForWritesAndKeepsTermFloor(t *testing.T) {
+	router := newRouter(t)
+	disk := cpconfig.Disk{Path: filepath.Join(t.TempDir(), "gateway.json"), Cluster: "test", Region: "eu", Client: "gateway/a", MaxAge: time.Hour}
+	config := cpconfigtest.Config(9)
+	for i := range config.Partitions {
+		config.Partitions[i].ObservedTerm = 6
+	}
+	if err := disk.Save(cpconfig.Saved{Config: config, AcceptedAt: time.Now(),
+		Observations: []cpconfig.Observation{{Region: "eu", Partition: 0, Term: 7, Leader: "eu-1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	returned := config.Clone()
+	poller := gateway.NewPoller(configClientFunc(func(context.Context, *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
+		return &controlplanev1.GetConfigResponse{Revision: returned.Revision, Config: returned.ToProto()}, nil
+	}), router, "a")
+	poller.Disk = &disk
+	if err := poller.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.GetLeader(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.WriteLeader(1); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("cold write = %v", err)
+	}
+	returned.Revision = 8
+	if err := poller.Refresh(t.Context()); err == nil {
+		t.Fatal("restored older CP revision accepted")
+	}
+	returned.Revision = 9
+	if err := poller.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.WriteLeader(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.WriteLeader(0); !errors.Is(err, gateway.ErrNoLeader) {
+		t.Fatalf("older term write = %v", err)
+	}
+	returned.Partitions[0].ObservedTerm = 8
+	if err := poller.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.WriteLeader(0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGatewayKeepsPublishedMapWhenCheckpointWriteFails(t *testing.T) {
+	router := newRouter(t)
+	if err := router.Apply(cpconfigtest.Config(1)); err != nil {
+		t.Fatal(err)
+	}
+	disk := cpconfig.Disk{Path: filepath.Join(t.TempDir(), "missing-parent", "latest.json"),
+		Cluster: "test", Region: "eu", Client: "gateway/a", MaxAge: time.Hour}
+	poller := gateway.NewPoller(configClientFunc(func(context.Context, *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
+		return fullResponse(2), nil
+	}), router, "a")
+	poller.Disk = &disk
+	if err := poller.Refresh(t.Context()); err == nil || router.Revision() != 1 {
+		t.Fatalf("config was published without a durable checkpoint, revision %d, error %v", router.Revision(), err)
 	}
 }

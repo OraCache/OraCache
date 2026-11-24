@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/OraCache/oracache/internal/cpconfig"
@@ -36,6 +37,8 @@ type Poller struct {
 	Interval   time.Duration
 	RPCTimeout time.Duration
 	Logger     *slog.Logger
+	Disk       *cpconfig.Disk
+	mu         sync.Mutex
 	refresh    chan struct{}
 }
 
@@ -79,7 +82,13 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	rpcCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	known := p.Router.Revision()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	floor := p.Router.Revision()
+	known := floor
+	if current := p.Router.cur.Load(); current != nil && current.cold {
+		known = 0
+	}
 	resp, err := p.Client.GetConfig(rpcCtx, &controlplanev1.GetConfigRequest{
 		NodeId:        p.NodeID,
 		KnownRevision: known,
@@ -91,8 +100,8 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	if resp == nil {
 		return errors.New("oracache/gateway: empty config response")
 	}
-	if resp.GetRevision() < known {
-		return fmt.Errorf("oracache/gateway: CP revision went backwards: known %d, got %d", known, resp.GetRevision())
+	if resp.GetRevision() < floor {
+		return fmt.Errorf("oracache/gateway: CP revision went backwards: known %d, got %d", floor, resp.GetRevision())
 	}
 	if resp.GetConfig() == nil {
 		if resp.GetRevision() == known {
@@ -108,7 +117,7 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("oracache/gateway: invalid config: %w", err)
 	}
-	if err := p.Router.ApplyView(cfg); err != nil {
+	if err := p.Router.applyView(cfg, nil, time.Now(), p.Disk); err != nil {
 		return fmt.Errorf("oracache/gateway: apply live view: %w", err)
 	}
 	if resp.GetRevision() == known {

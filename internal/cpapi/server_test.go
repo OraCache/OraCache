@@ -89,6 +89,7 @@ func TestHeartbeatAgeMetrics(t *testing.T) {
 	handler := srv.Metrics().Handler()
 	assertAge := func(want ...float64) {
 		t.Helper()
+		srv.RefreshStoreMetrics(ctx)
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 		if recorder.Code != http.StatusOK {

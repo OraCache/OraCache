@@ -23,10 +23,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
-	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	gatewayv1 "github.com/OraCache/oracache/gen/gateway/v1"
+	"github.com/OraCache/oracache/internal/cplink"
 	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/gateway"
 )
@@ -37,7 +36,7 @@ func main() {
 	var (
 		region       = flag.String("region", "", "local region of this gateway")
 		nodeID       = flag.String("node-id", "", "gateway identifier reported to Control Plane")
-		cpAddr       = flag.String("cp-addr", "127.0.0.1:50052", "Control Plane API address")
+		cpAddr       = flag.String("cp-addr", "127.0.0.1:50052", "ordered comma-separated Control Plane API addresses")
 		pollInterval = flag.Duration("poll-interval", gateway.DefaultPollInterval, "config pull interval")
 		rpcTimeout   = flag.Duration("rpc-timeout", gateway.DefaultRPCTimeout, "single CP RPC timeout")
 		listen       = flag.String("listen", "", "client gRPC address (empty serves diagnostics only)")
@@ -56,17 +55,25 @@ func main() {
 		logger.Error("create router", "region", *region, "error", err)
 		os.Exit(1)
 	}
-	conn, err := grpc.NewClient(*cpAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := cplink.Dial(*cpAddr)
 	if err != nil {
 		logger.Error("dial cp", "address", *cpAddr, "error", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	poller := gateway.NewPoller(controlplanev1.NewControlPlaneAPIClient(conn), router, *nodeID)
+	poller := gateway.NewPoller(conn, router, *nodeID)
 	poller.Interval = *pollInterval
 	poller.RPCTimeout = *rpcTimeout
 	poller.Logger = logger
+	poller.Disk, err = cplink.DiskFromEnv(*region, "gateway/"+*nodeID)
+	if err != nil {
+		logger.Error("configure checkpoint", "error", err)
+		os.Exit(2)
+	}
+	if err := poller.Restore(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		logger.Warn("restore gateway checkpoint failed", "error", err)
+	}
 
 	var stopStatus func()
 	if *statusListen != "" && *statusListen != "none" {
@@ -156,7 +163,21 @@ func newStatusHandler(router *gateway.Router) http.Handler {
 			{Labels: map[string]string{"operation": "put"}, Value: float64(snapshot.MissingWrites())},
 		}, nil
 	})
+	metrics.RegisterGaugeFunc("oracache_gateway_config_snapshot_age_seconds", "Seconds since acceptance of the routing snapshot.", func(context.Context) ([]cpmetrics.GaugeSample, error) {
+		accepted := router.AcceptedAt()
+		if accepted.IsZero() {
+			return nil, nil
+		}
+		return []cpmetrics.GaugeSample{{Value: max(0, time.Since(accepted).Seconds())}}, nil
+	})
 	mux.Handle("/metrics", metrics.Handler())
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !router.Confirmed() {
+			http.Error(w, "awaiting Control Plane confirmation", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("/routes", func(w http.ResponseWriter, _ *http.Request) {
 		snapshot := router.Routes()
 		w.Header().Set("Content-Type", "application/json")

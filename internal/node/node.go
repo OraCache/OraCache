@@ -25,12 +25,12 @@ import (
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/cpagent"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/cplink"
 	"github.com/OraCache/oracache/internal/store"
 	"github.com/OraCache/oracache/shardraft"
 	"go.etcd.io/raft/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -60,6 +60,7 @@ type Config struct {
 
 	// CPAddr enables the CP agent. Empty disables heartbeats.
 	CPAddr             string
+	CPDisk             *cpconfig.Disk
 	HeartbeatInterval  time.Duration
 	ConfigPullInterval time.Duration
 
@@ -85,7 +86,7 @@ type Node struct {
 	httpSrv  *http.Server
 	grpcSrv  *grpc.Server
 	agent    *cpagent.Agent
-	cpConn   *grpc.ClientConn
+	cpConn   *cplink.Client
 	httpCli  *http.Client
 	peerNode map[uint64]string
 	once     sync.Once
@@ -148,7 +149,7 @@ func New(cfg Config) (*Node, error) {
 	}
 
 	if cfg.CPAddr != "" {
-		n.cpConn, err = grpc.NewClient(cfg.CPAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		n.cpConn, err = cplink.Dial(cfg.CPAddr)
 		if err != nil {
 			n.grpcLis.Close()
 			n.raftLis.Close()
@@ -156,7 +157,7 @@ func New(cfg Config) (*Node, error) {
 		}
 		n.agent, err = cpagent.New(cpagent.Options{
 			NodeID: cfg.NodeID, Region: cfg.Region, Instance: cfg.NodeID,
-			Client: controlplanev1.NewControlPlaneAPIClient(n.cpConn), Statuses: n,
+			Client: n.cpConn, Statuses: n, Disk: cfg.CPDisk,
 			HeartbeatInterval: cfg.HeartbeatInterval, ConfigPullInterval: cfg.ConfigPullInterval,
 			Logger: n.log,
 		})
@@ -207,7 +208,7 @@ func (n *Node) Store() *store.Store { return n.store }
 func (n *Node) requireMasterForWrites(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	switch info.FullMethod {
 	case pb.CacheGateway_Put_FullMethodName, pb.CacheGateway_BatchPut_FullMethodName, pb.CacheGateway_Delete_FullMethodName:
-		config := n.agent.Config()
+		config := n.agent.ConfirmedConfig()
 		if config == nil {
 			return nil, status.Error(codes.Unavailable, "storage node has not received its Control Plane configuration")
 		}
@@ -233,7 +234,7 @@ func (n *Node) PartitionStatuses(context.Context) ([]*controlplanev1.PartitionSt
 		Term:         s.Term,
 		CommitIndex:  s.CommitIndex,
 		AppliedIndex: s.AppliedIndex,
-		Ready:        s.Ready && s.Running && (n.agent == nil || n.agent.Config() != nil),
+		Ready:        s.Ready && s.Running && (n.agent == nil || n.agent.Confirmed()),
 	}
 	if s.LeaderID != 0 {
 		ps.LeaderId = n.peerNode[s.LeaderID]

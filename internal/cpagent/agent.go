@@ -11,8 +11,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"hash/fnv"
 	"log/slog"
+	"os"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -79,6 +82,7 @@ type Options struct {
 	Client   controlplanev1.ControlPlaneAPIClient
 	Statuses StatusProvider
 	Holder   *cpconfig.Holder
+	Disk     *cpconfig.Disk
 
 	Clock  Clock
 	Logger *slog.Logger
@@ -98,11 +102,13 @@ type Agent struct {
 	region   string
 	instance string
 
-	client   controlplanev1.ControlPlaneAPIClient
-	statuses StatusProvider
-	holder   *cpconfig.Holder
-	clock    Clock
-	log      *slog.Logger
+	client    controlplanev1.ControlPlaneAPIClient
+	statuses  StatusProvider
+	holder    *cpconfig.Holder
+	disk      *cpconfig.Disk
+	confirmed atomic.Pointer[cpconfig.Config]
+	clock     Clock
+	log       *slog.Logger
 
 	heartbeatInterval   time.Duration
 	heartbeatFollowHint bool
@@ -158,13 +164,14 @@ func New(opts Options) (*Agent, error) {
 	if opts.DisableJitter {
 		jitterFraction = 0
 	}
-	return &Agent{
+	agent := &Agent{
 		nodeID:              opts.NodeID,
 		region:              opts.Region,
 		instance:            opts.Instance,
 		client:              opts.Client,
 		statuses:            opts.Statuses,
 		holder:              opts.Holder,
+		disk:                opts.Disk,
 		clock:               opts.Clock,
 		log:                 opts.Logger,
 		heartbeatInterval:   opts.HeartbeatInterval,
@@ -173,7 +180,9 @@ func New(opts Options) (*Agent, error) {
 		rpcTimeout:          opts.RPCTimeout,
 		jitterFraction:      jitterFraction,
 		pullNow:             make(chan struct{}, 1),
-	}, nil
+	}
+	agent.confirmed.Store(opts.Holder.Current())
+	return agent, nil
 }
 
 // Config возвращает last-known-good snapshot или nil, если он ещё не применён.
@@ -182,12 +191,23 @@ func (a *Agent) Config() *cpconfig.Config { return a.holder.Current() }
 // Revision возвращает текущую известную revision конфигурации или 0.
 func (a *Agent) Revision() uint64 { return a.holder.Revision() }
 
+// Confirmed reports whether the accepted topology is usable for writes.
+func (a *Agent) Confirmed() bool { return a.ConfirmedConfig() != nil }
+
+// ConfirmedConfig returns the configuration available for write authorization.
+func (a *Agent) ConfirmedConfig() *cpconfig.Config {
+	return a.confirmed.Load()
+}
+
 // Run запускает циклы heartbeat и config pull и блокируется до отмены ctx.
 // Ошибки CP логируются и повторяются с backoff; они не останавливают Data Plane.
 // Обычно вызывается в goroutine процесса ноды.
 func (a *Agent) Run(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("oracache/cpagent: nil context")
+	}
+	if err := a.restore(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		a.log.WarnContext(ctx, "restore agent checkpoint failed", "error", err)
 	}
 	done := make(chan struct{}, 2)
 	go func() {
@@ -299,7 +319,11 @@ func (a *Agent) sendHeartbeat(ctx context.Context) (time.Duration, error) {
 // pullConfig получает и атомарно применяет новую revision конфигурации.
 // Неудачный или невалидный pull сохраняет предыдущий last-known-good snapshot.
 func (a *Agent) pullConfig(ctx context.Context) error {
-	known := a.holder.Revision()
+	floor := a.holder.Revision()
+	known := floor
+	if floor > 0 && !a.Confirmed() {
+		known = 0
+	}
 	req := &controlplanev1.GetConfigRequest{
 		NodeId:        a.nodeID,
 		KnownRevision: known,
@@ -314,10 +338,13 @@ func (a *Agent) pullConfig(ctx context.Context) error {
 	if resp == nil {
 		return errors.New("get config: empty response")
 	}
-	if resp.GetRevision() < known {
-		return fmt.Errorf("get config: revision went backwards from %d to %d", known, resp.GetRevision())
+	if resp.GetRevision() < floor {
+		return fmt.Errorf("get config: revision went backwards from %d to %d", floor, resp.GetRevision())
 	}
-	if resp.GetRevision() == known {
+	if resp.GetRevision() == known && resp.GetConfig() == nil {
+		if a.Confirmed() {
+			a.save(ctx)
+		}
 		return nil
 	}
 	if resp.GetConfig() == nil {
@@ -331,9 +358,15 @@ func (a *Agent) pullConfig(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("get config: invalid config: %w", err)
 	}
-	if err := a.holder.Apply(next); err != nil {
+	if next.Revision == floor {
+		if !proto.Equal(a.Config().ToProto(), next.ToProto()) {
+			return errors.New("get config: topology changed at the same revision")
+		}
+	} else if err := a.holder.Apply(next); err != nil {
 		return fmt.Errorf("get config: apply config: %w", err)
 	}
+	a.confirmed.Store(a.holder.Current())
+	a.save(ctx)
 	a.log.Info("cp config applied",
 		"node_id", a.nodeID,
 		"region", a.region,

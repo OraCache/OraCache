@@ -89,6 +89,19 @@ jobs:
       - name: Protobuf client against Compose gateway
         id: tests
         run: make test-e2e
+      - name: Prefetch the etcd integration image
+        run: |
+          for attempt in 1 2 3; do
+            if docker pull --quiet quay.io/coreos/etcd:v3.6.16; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          exit 1
+      - name: etcd and Control Plane failover
+        run: go test -tags=integration -count=1 -timeout=5m -v ./cmd/cp-api -run '^TestEtcd(HARuntime|ControlPlane)$'
       - name: Upload JUnit reports
         if: always()
         uses: actions/upload-artifact@v4

@@ -326,9 +326,17 @@ func docker(t *testing.T, args ...string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	var stderr bytes.Buffer
+	command := exec.CommandContext(ctx, "docker", args...)
+	command.Stderr = &stderr
+	output, err := command.Output()
 	if err != nil {
-		t.Fatalf("docker %s: %v\n%s", args[0], err, output)
+		t.Fatalf("docker %s: %v\n%s\n%s", args[0], err, output, stderr.String())
+	}
+	// Pull progress goes to stderr on a cold runner. Callers use stdout for
+	// container IDs, published ports and other machine-readable results.
+	if args[0] == "logs" {
+		output = append(output, stderr.Bytes()...)
 	}
 	return strings.TrimSpace(string(output))
 }
@@ -429,6 +437,7 @@ func attachTestGateway(t *testing.T, client controlplanev1.ControlPlaneAPIClient
 
 func heartbeatAge(t *testing.T, api *cpapi.Server) (float64, bool) {
 	t.Helper()
+	api.RefreshStoreMetrics(t.Context())
 	var metrics bytes.Buffer
 	if err := api.Metrics().Render(&metrics); err != nil {
 		t.Fatal(err)
