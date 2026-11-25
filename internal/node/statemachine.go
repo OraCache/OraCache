@@ -49,6 +49,11 @@ func (m *StateMachine) Put(_ context.Context, r *pb.PutRequest, _ ...grpc.CallOp
 	if r.GetKey() == "" {
 		return nil, errEmptyKey
 	}
+	// Store itself retains even an oversized last entry. The Raft adapter must
+	// bound keys too, otherwise a single escaped key could exceed snapshot size.
+	if int64(len(r.Key))+int64(len(r.Data))+96 > m.s.Config().MaxBytes {
+		return &pb.PutResponse{Status: pb.PutStatus_PUT_STATUS_TOO_LARGE}, nil
+	}
 	res, err := m.s.Put(r.Key, r.Data, r.ExpectedRev)
 	if err != nil {
 		if errors.Is(err, store.ErrRevisionsExhausted) {

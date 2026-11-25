@@ -7,17 +7,47 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// HTTPTransport sends Raft messages to fixed URLs. The host can use HTTPS and
+// HTTPTransport sends Raft messages to committed peer URLs. The host can use HTTPS and
 // configure authentication on its supplied http.Client/server. The PoC provides
 // no peer authentication; group IDs are routing checks, not credentials.
 type HTTPTransport struct {
+	mu        sync.RWMutex
 	addresses map[uint64]string
 	client    *http.Client
+}
+
+// PeerAddress lets NewInstance include legacy constructor addresses in the
+// replicated bootstrap metadata, even when Config.Peers omits RaftAddress.
+func (t *HTTPTransport) PeerAddress(id uint64) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.addresses[id]
+}
+
+func (t *HTTPTransport) ValidatePeer(peer Peer) error {
+	u, err := url.Parse(peer.RaftAddress)
+	if err != nil || peer.ID == 0 || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Fragment != "" {
+		return fmt.Errorf("peer requires a valid HTTP(S) RaftAddress")
+	}
+	return nil
+}
+
+// SetPeer is invoked only when a committed membership record or snapshot is
+// applied. It is safe to call concurrently with existing Send workers.
+func (t *HTTPTransport) SetPeer(peer Peer) error {
+	if err := t.ValidatePeer(peer); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	t.addresses[peer.ID] = peer.RaftAddress
+	t.mu.Unlock()
+	return nil
 }
 
 func NewHTTPTransport(addresses map[uint64]string, client *http.Client) (*HTTPTransport, error) {
@@ -39,7 +69,9 @@ func NewHTTPTransport(addresses map[uint64]string, client *http.Client) (*HTTPTr
 }
 
 func (t *HTTPTransport) Send(ctx context.Context, group string, to uint64, data []byte) error {
+	t.mu.RLock()
 	address, exists := t.addresses[to]
+	t.mu.RUnlock()
 	if !exists {
 		return fmt.Errorf("unknown peer %d", to)
 	}
