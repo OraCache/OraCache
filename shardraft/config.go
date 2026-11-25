@@ -29,6 +29,12 @@ type Peer struct {
 	Address string
 }
 
+const (
+	DefaultMaxWireBytes int64 = 2 << 30
+	maxCommandBytes           = 63 << 20
+	wireOverhead              = 1 << 20
+)
+
 type Config struct {
 	RegionID string
 	ShardID  uint32
@@ -44,6 +50,8 @@ type Config struct {
 	SendTimeout     time.Duration
 	MaxPending      int
 	MaxCommandBytes int
+	// MaxWireBytes bounds an incoming Raft message, including snapshots. Zero selects the default.
+	MaxWireBytes int64
 	// SnapshotEntries triggers an in-memory checkpoint and log compaction.
 	// Zero selects the default (1000 applied entries).
 	SnapshotEntries uint64
@@ -93,9 +101,15 @@ func (c Config) normalized() (Config, error) {
 	if c.SnapshotEntries == 0 {
 		c.SnapshotEntries = 1000
 	}
+	if c.MaxWireBytes == 0 {
+		c.MaxWireBytes = DefaultMaxWireBytes
+	}
 	if c.TickInterval <= 0 || c.HeartbeatTicks <= 0 || c.ElectionTicks <= c.HeartbeatTicks ||
-		c.RequestTimeout <= 0 || c.SendTimeout <= 0 || c.MaxPending < 1 || c.MaxCommandBytes < 1024 || c.MaxCommandBytes > maxWireBytes-(1<<20) {
+		c.RequestTimeout <= 0 || c.SendTimeout <= 0 || c.MaxPending < 1 || c.MaxCommandBytes < 1024 || c.MaxCommandBytes > maxCommandBytes {
 		return c, fmt.Errorf("invalid timeout, election, queue or command-size configuration")
+	}
+	if c.MaxWireBytes < int64(c.MaxCommandBytes)+wireOverhead {
+		return c, fmt.Errorf("Raft wire limit must fit the command limit plus message overhead")
 	}
 	return c, nil
 }

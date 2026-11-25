@@ -65,11 +65,12 @@ type Config struct {
 
 	Store store.Config
 
-	// Raft timing; zero values select shardraft defaults.
-	TickInterval    time.Duration
-	ElectionTicks   int
-	RequestTimeout  time.Duration
-	SnapshotEntries uint64
+	// Zero values select shardraft defaults.
+	TickInterval     time.Duration
+	ElectionTicks    int
+	RequestTimeout   time.Duration
+	SnapshotEntries  uint64
+	MaxRaftWireBytes int64
 
 	Logger *slog.Logger
 }
@@ -132,7 +133,7 @@ func New(cfg Config) (*Node, error) {
 		RegionID: cfg.Region, ShardID: cfg.ShardID, GroupID: cfg.GroupID,
 		PeerID: cfg.PeerID, Peers: raftPeers, ReadMode: cfg.ReadMode,
 		TickInterval: cfg.TickInterval, ElectionTicks: cfg.ElectionTicks,
-		RequestTimeout: cfg.RequestTimeout, SnapshotEntries: cfg.SnapshotEntries,
+		RequestTimeout: cfg.RequestTimeout, SnapshotEntries: cfg.SnapshotEntries, MaxWireBytes: cfg.MaxRaftWireBytes,
 		Logger: &raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)},
 	}, NewStateMachine(n.store), transport)
 	if err != nil {

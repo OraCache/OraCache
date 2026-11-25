@@ -10,7 +10,7 @@ import (
 
 const (
 	DefaultMaxVersions   = 3
-	DefaultMaxBytes      = 256 << 20
+	DefaultMaxBytes      = 1280 << 20
 	DefaultMaxValueBytes = 10 << 10
 )
 
