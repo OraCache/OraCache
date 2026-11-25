@@ -113,14 +113,17 @@ prom_query 'sum by (job,operation) (rate(oracache_cache_rpc_total{grpc_code!="OK
 for q in 0.50 0.95 0.99; do
   prom_query "histogram_quantile($q, sum by (job,operation,le) (rate(oracache_cache_rpc_duration_seconds_bucket[1m])))"
 done
-prom_query 'sum by (job) (rate(oracache_cache_rpc_total{outcome="hit"}[1m])) / (sum by (job) (rate(oracache_cache_rpc_total{operation="get",grpc_code="OK",outcome=~"hit|miss|version_not_found"}[1m])) > 0)'
+prom_query 'sum by (job) (rate(oracache_cache_rpc_total{operation="get",grpc_code="OK",outcome="hit"}[1m])) / (sum by (job) (rate(oracache_cache_rpc_total{operation="get",grpc_code="OK",outcome=~"hit|miss|version_not_found"}[1m])) > 0)'
 prom_query 'time() - oracache_gateway_config_last_success_timestamp_seconds'
 prom_query 'oracache_raft_commit_index - oracache_raft_applied_index'
 prom_query 'oracache_raft_follower_lag_entries'
+prom_query 'oracache_raft_replica_state'
 ```
 
 Доля gRPC-ошибок считается среди обработанных RPC. Доменный `MISS`
-получает gRPC `OK` и учитывается в знаменателе hit rate. Перцентили
+получает gRPC `OK` и учитывается в знаменателе доли попаданий. PromQL
+возвращает долю от 0 до 1, а Grafana показывает её в процентах. Если
+за минуту не было подходящих GET, у графика нет значения. Перцентили
 рассчитываются отдельно для каждого слоя. Таймер Gateway включает
 маршрутизацию, ожидание Storage Node и повторы. Таймер Storage Node
 измеряет собственный обработчик, включая ожидание Raft.
@@ -143,6 +146,14 @@ prom_query 'oracache_raft_follower_lag_entries'
 пары регион–партиция. Правило требует одного лидера в максимальном
 наблюдаемом терме, а разницу ограничивает снизу нулём из-за разновременных
 scrape. При неизвестном или неоднозначном лидере серия отсутствует.
+
+Таблица «Роли реплик по партициям» показывает наблюдаемое состояние
+на пересечении пары регион–партиция и ноды. `L` означает одного
+наблюдаемого лидера в максимальном терме, `F` — follower, `?` —
+лидерство не подтверждено, `↓` — пропал сигнал от реплики, которую
+Prometheus видел за последние 5 минут. `—` означает отсутствие данных о
+реплике в этой ячейке. Для проверки запланированных назначений используйте
+`cp-topology status` в профиле с etcd.
 
 #### Ожидаемые сигналы при отказах
 

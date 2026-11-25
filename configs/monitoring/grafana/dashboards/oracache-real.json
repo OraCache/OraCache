@@ -204,7 +204,7 @@
       "id": 16,
       "type": "timeseries",
       "title": "Доля попаданий GET",
-      "description": "HIT среди HIT, MISS и VERSION_NOT_FOUND с кодом OK.",
+      "description": "Попадания среди успешных GET с исходами HIT, MISS и VERSION_NOT_FOUND. Ошибки gRPC в долю не входят. Если подходящих запросов нет, доля отсутствует.",
       "gridPos": {"x":12,"y":44,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"percentunit","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
@@ -248,11 +248,40 @@
       "panels": []
     },
     {
+      "id": 33,
+      "type": "table",
+      "title": "Роли реплик по партициям",
+      "description": "Каждая строка — одна группа Raft (регион и партиция). L — один наблюдаемый лидер в максимальном терме; F — нода сообщает роль follower; ? — роль лидера не подтверждена или идёт переизбрание; ↓ — нет свежего сигнала от реплики, замеченной за последние 5 минут; — — данных о реплике для этой пары нет.",
+      "gridPos": {"x":0,"y":59,"w":24,"h":8},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [
+            {"type":"value","options":{"-1":{"text":"↓","color":"#803640"},"0":{"text":"?","color":"#704b21"},"1":{"text":"F","color":"#284e82"},"2":{"text":"L","color":"#246444"}}},
+            {"type":"special","options":{"match":"null","result":{"text":"—","color":"#26292e"}}}
+          ],
+          "custom": {"cellOptions":{"type":"color-background","mode":"basic"},"align":"center","minWidth":85}
+        },
+        "overrides": [
+          {"matcher":{"id":"byName","options":"raft_group\\node_id"},"properties":[{"id":"displayName","value":"Регион / партиция"},{"id":"custom.cellOptions","value":{"type":"auto"}},{"id":"custom.align","value":"left"},{"id":"custom.width","value":195}]}
+        ]
+      },
+      "options": {"showHeader":true,"enablePagination":true,"cellHeight":"md"},
+      "transformations": [
+        {"id":"groupingToMatrix","options":{"rowField":"raft_group","columnField":"node_id","valueField":"Value","emptyValue":"null"}}
+      ],
+      "targets": [
+        {"refId":"A","expr":"label_join(oracache_raft_replica_state, \"raft_group\", \" / \", \"region\", \"partition\")","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"format":"table","instant":true,"range":false}
+      ]
+    },
+    {
       "id": 20,
       "type": "timeseries",
       "title": "Лидер, известное лидерство и Ready",
       "description": "Локальные признаки из снимка каждой реплики. Доступность записи проверяется клиентским PUT.",
-      "gridPos": {"x":0,"y":59,"w":12,"h":7},
+      "gridPos": {"x":0,"y":67,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -268,7 +297,7 @@
       "type": "timeseries",
       "title": "Raft term",
       "description": "Текущий терм каждой реплики.",
-      "gridPos": {"x":12,"y":59,"w":12,"h":7},
+      "gridPos": {"x":12,"y":67,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -281,7 +310,7 @@
       "type": "timeseries",
       "title": "Индексы реплик",
       "description": "Конец локального лога включает незакоммиченные записи. Snapshot index равен нулю до первого снапшота.",
-      "gridPos": {"x":0,"y":66,"w":12,"h":7},
+      "gridPos": {"x":0,"y":74,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -297,7 +326,7 @@
       "type": "timeseries",
       "title": "Очередь применения",
       "description": "Локальный commit_index минус локальный applied_index, в записях лога.",
-      "gridPos": {"x":12,"y":66,"w":12,"h":7},
+      "gridPos": {"x":12,"y":74,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -310,7 +339,7 @@
       "type": "timeseries",
       "title": "Оценка отставания follower",
       "description": "Commit наблюдаемого лидера минус applied follower той же группы. При неизвестном или неоднозначном лидере серия отсутствует.",
-      "gridPos": {"x":0,"y":73,"w":12,"h":7},
+      "gridPos": {"x":0,"y":81,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -323,7 +352,7 @@
       "type": "timeseries",
       "title": "Длительность этапов Raft",
       "description": "p95 исполнения команды, получения ReadIndex, кодирования чекпоинта и восстановления Store.",
-      "gridPos": {"x":12,"y":73,"w":12,"h":7},
+      "gridPos": {"x":12,"y":81,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"s","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -335,7 +364,7 @@
       "id": 26,
       "type": "row",
       "title": "Ресурсы процессов",
-      "gridPos": {"x":0,"y":80,"w":24,"h":1},
+      "gridPos": {"x":0,"y":88,"w":24,"h":1},
       "collapsed": false,
       "panels": []
     },
@@ -344,7 +373,7 @@
       "type": "timeseries",
       "title": "CPU процессов",
       "description": "CPU-секунды за секунду. Значение 1 соответствует одному занятому ядру.",
-      "gridPos": {"x":0,"y":81,"w":12,"h":7},
+      "gridPos": {"x":0,"y":89,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -357,7 +386,7 @@
       "type": "timeseries",
       "title": "Резидентная память процессов",
       "description": "Текущий RSS каждого процесса в байтах.",
-      "gridPos": {"x":12,"y":81,"w":12,"h":7},
+      "gridPos": {"x":12,"y":89,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"bytes","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -370,7 +399,7 @@
       "type": "timeseries",
       "title": "Go heap",
       "description": "Байты занятых объектов Go heap.",
-      "gridPos": {"x":0,"y":88,"w":12,"h":7},
+      "gridPos": {"x":0,"y":96,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"bytes","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -383,7 +412,7 @@
       "type": "timeseries",
       "title": "Go-горутины",
       "description": "Количество горутин по процессам.",
-      "gridPos": {"x":12,"y":88,"w":12,"h":7},
+      "gridPos": {"x":12,"y":96,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -396,7 +425,7 @@
       "type": "timeseries",
       "title": "Учтённые байты Store",
       "description": "Внутренний учёт памяти кэша по Store.Stats() каждой реплики.",
-      "gridPos": {"x":0,"y":95,"w":12,"h":7},
+      "gridPos": {"x":0,"y":103,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"bytes","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
@@ -409,7 +438,7 @@
       "type": "timeseries",
       "title": "Ключи в Store",
       "description": "Число ключей по Store.Stats() каждой реплики.",
-      "gridPos": {"x":12,"y":95,"w":12,"h":7},
+      "gridPos": {"x":12,"y":103,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
