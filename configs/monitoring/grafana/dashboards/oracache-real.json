@@ -293,7 +293,7 @@
           "custom": {"cellOptions":{"type":"color-background","mode":"basic"},"align":"center","minWidth":85}
         },
         "overrides": [
-          {"matcher":{"id":"byName","options":"partition\\node_id"},"properties":[{"id":"displayName","value":"Партиция"},{"id":"custom.cellOptions","value":{"type":"auto"}},{"id":"custom.align","value":"left"},{"id":"custom.width","value":120}]}
+          {"matcher":{"id":"byName","options":"partition\\node_id"},"properties":[{"id":"displayName","value":"Партиция"},{"id":"mappings","value":[]},{"id":"custom.cellOptions","value":{"type":"auto"}},{"id":"custom.align","value":"left"},{"id":"custom.width","value":120}]}
         ]
       },
       "options": {"showHeader":true,"enablePagination":true,"cellHeight":"md"},
