@@ -7,6 +7,34 @@
     "from": "now-5m",
     "to": "now"
   },
+  "templating": {
+    "list": [
+      {
+        "name": "raft_region",
+        "label": "Регион матрицы",
+        "type": "query",
+        "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+        "query": "label_values(oracache_raft_replica_state,region)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false
+      },
+      {
+        "name": "raft_partition",
+        "label": "Партиция матрицы",
+        "type": "query",
+        "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+        "query": "label_values(oracache_raft_replica_state{region=\"${raft_region}\"},partition)",
+        "refresh": 2,
+        "sort": 3,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"text":"All","value":"$__all"}
+      }
+    ]
+  },
   "panels": [
     {
       "id": 1,
@@ -250,8 +278,8 @@
     {
       "id": 33,
       "type": "table",
-      "title": "Роли реплик по партициям",
-      "description": "Каждая строка — одна группа Raft (регион и партиция). L — один наблюдаемый лидер в максимальном терме; F — нода сообщает роль follower; ? — роль лидера не подтверждена или идёт переизбрание; ↓ — нет свежего сигнала от реплики, замеченной за последние 5 минут; — — данных о реплике для этой пары нет.",
+      "title": "Роли реплик по партициям · ${raft_region}",
+      "description": "Каждая строка — партиция выбранного региона. L — один наблюдаемый лидер в максимальном терме; F — нода сообщает роль follower; ? — роль лидера не подтверждена или идёт переизбрание; ↓ — нет свежего сигнала от реплики, замеченной за последние 5 минут; — — данных о реплике для этой пары нет.",
       "gridPos": {"x":0,"y":59,"w":24,"h":8},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {
@@ -265,15 +293,15 @@
           "custom": {"cellOptions":{"type":"color-background","mode":"basic"},"align":"center","minWidth":85}
         },
         "overrides": [
-          {"matcher":{"id":"byName","options":"raft_group\\node_id"},"properties":[{"id":"displayName","value":"Регион / партиция"},{"id":"custom.cellOptions","value":{"type":"auto"}},{"id":"custom.align","value":"left"},{"id":"custom.width","value":195}]}
+          {"matcher":{"id":"byName","options":"partition\\node_id"},"properties":[{"id":"displayName","value":"Партиция"},{"id":"custom.cellOptions","value":{"type":"auto"}},{"id":"custom.align","value":"left"},{"id":"custom.width","value":120}]}
         ]
       },
       "options": {"showHeader":true,"enablePagination":true,"cellHeight":"md"},
       "transformations": [
-        {"id":"groupingToMatrix","options":{"rowField":"raft_group","columnField":"node_id","valueField":"Value","emptyValue":"null"}}
+        {"id":"groupingToMatrix","options":{"rowField":"partition","columnField":"node_id","valueField":"Value","emptyValue":"null"}}
       ],
       "targets": [
-        {"refId":"A","expr":"label_join(oracache_raft_replica_state, \"raft_group\", \" / \", \"region\", \"partition\")","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"format":"table","instant":true,"range":false}
+        {"refId":"A","expr":"oracache_raft_replica_state{region=\"${raft_region}\",partition=~\"${raft_partition:regex}\"}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"format":"table","instant":true,"range":false}
       ]
     },
     {

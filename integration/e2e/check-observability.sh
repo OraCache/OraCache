@@ -156,9 +156,16 @@ jq -ec 'select(.meta.provisioned) | {dashboard:.dashboard.uid, panels:(.dashboar
 curl -fsS "http://$grafana/api/dashboards/uid/oracache-cp-monitoring" | jq -e '.meta.provisioned' >/dev/null
 curl -fsS "http://$grafana/api/datasources/proxy/uid/oracache-prometheus/api/v1/query?query=up" |
   jq -e '.status == "success" and (.data.result | length == 5)' >/dev/null
+matrix_query=$(jq -er '.dashboard.panels[] | select(.id == 33) | .targets[0].expr' <<<"$dashboard")
+regional_matrix=${matrix_query//\$\{raft_region\}/region-a}
+await_query "${regional_matrix//\$\{raft_partition:regex\}/.*}" \
+  'length == 3 and all(.[]; .labels.region == "region-a")' >/dev/null
+await_query "${regional_matrix//\$\{raft_partition:regex\}/0}" \
+  'length == 3 and all(.[]; .labels.partition == "0")' >/dev/null
+await_query "${regional_matrix//\$\{raft_partition:regex\}/1}" 'length == 0' >/dev/null
 while IFS= read -r expression; do
   query "$expression" >/dev/null
-done < <(jq -r '.dashboard.panels[].targets[]?.expr' <<<"$dashboard")
+done < <(jq -r '.dashboard.panels[] | select(.id != 33) | .targets[]?.expr' <<<"$dashboard")
 
 # As in TestControlPlaneGatewayFailover, stop the serving node after confirmation
 # and check the same Gateway with the acknowledged version and a conditional write.
