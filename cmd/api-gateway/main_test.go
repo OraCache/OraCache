@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/common/expfmt"
+
 	"github.com/OraCache/oracache/internal/cpconfig/cpconfigtest"
 	"github.com/OraCache/oracache/internal/gateway"
 )
@@ -100,6 +102,58 @@ func TestStatusHandlerHealthz(t *testing.T) {
 	if body := recorder.Body.String(); body != "ok\n" {
 		t.Fatalf("healthz body = %q", body)
 	}
+}
+
+func TestStatusHandlerMissingRouteMetrics(t *testing.T) {
+	t.Parallel()
+	router := testRouter(t, "us")
+	handler := newStatusHandler(router)
+	assertMissing := func(want map[string]float64) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("metrics status = %d, body = %s", recorder.Code, recorder.Body)
+		}
+		var parser expfmt.TextParser
+		families, err := parser.TextToMetricFamilies(recorder.Body)
+		if err != nil {
+			t.Fatalf("parse metrics: %v", err)
+		}
+		samples := families["oracache_gateway_partitions_without_route"].GetMetric()
+		if len(samples) != len(want) {
+			t.Fatalf("missing routes samples = %v, want %v", samples, want)
+		}
+		for _, sample := range samples {
+			labels := sample.GetLabel()
+			if len(labels) != 1 || labels[0].GetName() != "operation" || sample.GetGauge() == nil {
+				t.Fatalf("invalid missing routes sample = %v", sample)
+			}
+			operation := labels[0].GetValue()
+			if expected, ok := want[operation]; !ok || sample.GetGauge().GetValue() != expected {
+				t.Fatalf("missing routes sample = %v, want %v", sample, want)
+			}
+		}
+	}
+	cfg := cpconfigtest.Config(1)
+	assertMissing(nil)
+	if err := router.ApplyView(cfg); err != nil {
+		t.Fatalf("ApplyView: %v", err)
+	}
+	assertMissing(map[string]float64{"get": 0, "put": 0})
+	for i := range cfg.Partitions {
+		assignment := &cfg.Partitions[i]
+		if assignment.Region == "us" && assignment.PartitionID == 0 {
+			assignment.Readable = false
+		}
+		if assignment.Region == "eu" && assignment.PartitionID < 2 {
+			assignment.Writable = false
+		}
+	}
+	if err := router.ApplyView(cfg); err != nil {
+		t.Fatalf("ApplyView at same revision: %v", err)
+	}
+	assertMissing(map[string]float64{"get": 1, "put": 2})
 }
 
 func TestStatusHandlerSlaveRegionRoutesToMaster(t *testing.T) {

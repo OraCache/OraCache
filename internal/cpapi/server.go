@@ -123,11 +123,28 @@ func New(store statestore.Store, opts ...Option) *Server {
 		opt(s)
 	}
 	s.startedAt = s.clock.Now()
+	s.metrics.RegisterGaugeFunc(cpmetrics.HeartbeatAge, "Seconds since the CP API received the last heartbeat from a configured node.", s.heartbeatAges)
 	return s
 }
 
 // Metrics возвращает реестр метрик сервера для экспозиции /metrics.
 func (s *Server) Metrics() *cpmetrics.Metrics { return s.metrics }
+
+func (s *Server) heartbeatAges(ctx context.Context) ([]cpmetrics.GaugeSample, error) {
+	receipts, err := s.store.HeartbeatReceipts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock.Now()
+	samples := make([]cpmetrics.GaugeSample, 0, len(receipts))
+	for _, receipt := range receipts {
+		samples = append(samples, cpmetrics.GaugeSample{
+			Labels: map[string]string{"region": receipt.Region, "node_id": receipt.NodeID},
+			Value:  max(0, now.Sub(receipt.ReceivedAt).Seconds()),
+		})
+	}
+	return samples, nil
+}
 
 // ReportHeartbeat реализует controlplanev1.ControlPlaneAPI. Он сохраняет полный
 // snapshot локальных partition-групп и возвращает текущую revision конфигурации.
