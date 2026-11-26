@@ -1,10 +1,9 @@
-package node
+package node_test
 
 import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/OraCache/oracache/internal/replication"
 	"io"
 	"log"
 	"strings"
@@ -12,6 +11,8 @@ import (
 	"time"
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	"github.com/OraCache/oracache/internal/node"
+	"github.com/OraCache/oracache/internal/replication"
 	"github.com/OraCache/oracache/internal/store"
 	"github.com/OraCache/oracache/shardraft"
 	"go.etcd.io/raft/v3"
@@ -36,13 +37,13 @@ func smallStoreConfig() store.Config {
 	return store.Config{MaxVersions: 2, MaxValueBytes: 100, MaxBytes: 2 * (64 + 3 + 2*(32+100))}
 }
 
-func newSM(t *testing.T) (*StateMachine, *store.Store) {
+func newSM(t *testing.T) (*node.StateMachine, *store.Store) {
 	t.Helper()
 	s, err := store.New(smallStoreConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewStateMachine(s, &replication.State{}), s
+	return node.NewStateMachine(s, &replication.State{}), s
 }
 
 func TestStateMachineMapsStoreResults(t *testing.T) {
@@ -96,7 +97,7 @@ func TestStateMachineMapsStoreResults(t *testing.T) {
 func TestReadsDoNotChangeEvictionOrder(t *testing.T) {
 	ctx := context.Background()
 	val := bytes.Repeat([]byte("x"), 100)
-	apply := func(sm *StateMachine, reads bool) {
+	apply := func(sm *node.StateMachine, reads bool) {
 		for _, k := range []string{"a", "b", "c", "d"} {
 			if _, err := sm.Put(ctx, &pb.PutRequest{Key: k, Data: val}); err != nil {
 				t.Fatal(err)

@@ -27,6 +27,42 @@ go run ./cmd/oracache delete demo:key     # DELETE_STATUS_DELETED
 go run ./cmd/oracache get demo:key        # GET_STATUS_MISS
 ```
 
+### Управление составом Raft
+
+Административный gRPC-сервис управления составом работает на том же адресе Gateway.
+Например, текущий состав группы стенда:
+
+```sh
+go run ./cmd/oracache membership get --group-id=region-a/shard-0/poc-1 --region=region-a --partition-id=0
+```
+
+Для добавления ноды запустите её с новым `peer-id` и `node-id`, прежним `group-id`
+и `--join`. Затем вызовите `membership add-learner` с её клиентским и Raft-адресом;
+после синхронизации — `membership promote` либо `membership replace`. Команды
+`membership remove` и `membership get` работают через тот же Gateway.
+Каждому изменению нужен уникальный `--operation-id`; при неизвестном результате
+повторяйте запрос с тем же ID и параметрами.
+
+### Метрики Control Plane и Gateway
+
+Gateway отдаёт `oracache_gateway_partitions_without_route{operation}` на
+`/metrics` рядом с `/routes`.
+
+```sh
+curl -fsS http://127.0.0.1:9466/metrics
+```
+
+После первой карты метрика показывает, для скольких партиций Gateway не
+получил маршрут на чтение или запись. Ноль означает полное покрытие карты.
+При смене лидера карта может временно потерять маршрут, даже если Raft
+позже успешно продолжит работу без смены `config_revision`.
+
+При отдельном запуске `cp-api` метрика
+`oracache_cp_heartbeat_age_seconds{region,node_id}` доступна на
+`127.0.0.1:9464/metrics` по умолчанию. После истечения TTL она остаётся
+видимой, пока пара нода–регион есть в конфигурации. В `compose.cp.yaml`
+метрики CP и Storage Node доступны внутри сети Compose.
+
 ### Остановка
 
 ```sh
@@ -48,11 +84,188 @@ GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
 
 Правила маршрутизации и повторов описаны в [ADR-004](docs/ADR-004-cp-raft-gateway-routing.md).
 
+### Мониторинг реального кластера
+
+Поднимите CP API с MemoryStore, Gateway, три Storage Node одной Raft-группы
+и мониторинг в отдельном проекте. При необходимости выберите свободные
+локальные порты через переменные окружения.
+
+```sh
+export ORACACHE_CP_PORT=28080 ORACACHE_CP_STATUS_PORT=9466
+export ORACACHE_PROMETHEUS_PORT=9090 ORACACHE_GRAFANA_PORT=3000
+docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml up -d --build
+curl -fsS "http://127.0.0.1:${ORACACHE_CP_STATUS_PORT}/routes"
+```
+
+Дождитесь маршрута для партиции `0` и выполните команды GET, PUT и DELETE из
+раздела «Запросы через gateway». Для графиков на основе `rate` нужен scrape
+до запросов и хотя бы ещё один после них. В Compose Gateway публикует
+диагностику на loopback, CP API отдаёт `/metrics` на внутреннем порту 9464,
+а Storage Node на существующем внутреннем Raft-порту 28191.
+
+- [Дашборд реального кластера](http://127.0.0.1:3000/d/oracache-real-cluster)
+- [Цели сбора Prometheus](http://127.0.0.1:9090/targets)
+
+Скрипт повторяет чистый запуск и три отказных сценария на отдельных проектах
+со свободными портами. Он требует Docker Compose, Go, `curl` и `jq`, выполняет
+RPC с дедлайном 3 с и выводит ответы и значения метрик для отчёта.
+
+```sh
+mkdir -p .reports
+integration/e2e/check-observability.sh > .reports/observability.log 2>&1
+```
+
+#### PromQL
+
+```sh
+prom_query() {
+  curl -fsSG "http://127.0.0.1:${ORACACHE_PROMETHEUS_PORT:-9090}/api/v1/query" \
+    --data-urlencode "query=$1" | jq -c '.data.result[]'
+}
+
+prom_query 'up{job=~"cp-api|api-gateway|storage-node"}'
+prom_query 'sum by (job,operation) (rate(oracache_cache_rpc_total[1m]))'
+prom_query 'sum by (job,operation) (rate(oracache_cache_rpc_total{grpc_code!="OK"}[1m])) / (sum by (job,operation) (rate(oracache_cache_rpc_total[1m])) > 0)'
+for q in 0.50 0.95 0.99; do
+  prom_query "histogram_quantile($q, sum by (job,operation,le) (rate(oracache_cache_rpc_duration_seconds_bucket[1m])))"
+done
+prom_query 'sum by (job) (rate(oracache_cache_rpc_total{operation="get",grpc_code="OK",outcome="hit"}[1m])) / (sum by (job) (rate(oracache_cache_rpc_total{operation="get",grpc_code="OK",outcome=~"hit|miss|version_not_found"}[1m])) > 0)'
+prom_query 'time() - oracache_gateway_config_last_success_timestamp_seconds'
+prom_query 'oracache_raft_commit_index - oracache_raft_applied_index'
+prom_query 'oracache_raft_follower_lag_entries'
+prom_query 'oracache_raft_replica_state'
+```
+
+Доля gRPC-ошибок считается среди обработанных RPC. Доменный `MISS`
+получает gRPC `OK` и учитывается в знаменателе доли попаданий. PromQL
+возвращает долю от 0 до 1, а Grafana показывает её в процентах. Если
+за минуту не было подходящих GET, у графика нет значения. Перцентили
+рассчитываются отдельно для каждого слоя. Таймер Gateway включает
+маршрутизацию, ожидание Storage Node и повторы. Таймер Storage Node
+измеряет собственный обработчик, включая ожидание Raft.
+
+| Сигнал | Источник, единицы и проверка |
+| --- | --- |
+| `oracache_cache_rpc_total`, `oracache_cache_rpc_duration_seconds` | Число завершённых GET, PUT и DELETE и время обработчика в секундах на серверной границе Gateway и Storage Node. Сверьте `outcome`, `grpc_code` и `_count` после клиентских запросов. |
+| `oracache_gateway_forward_attempts_total` | Число запущенных исходящих RPC. `reason` выделяет первый вызов, фактический повтор после NOT_LEADER и повтор чтения после временной ошибки. Batch RPC видны в пересылке. |
+| `oracache_cp_rpc_duration_seconds` | Время обработчиков `ReportHeartbeat` и `GetConfig` в секундах. Счётчик гистограммы растёт при heartbeat и опросе. |
+| `oracache_gateway_config_refresh_total`, `oracache_gateway_config_last_success_timestamp_seconds`, `oracache_gateway_config_revision` | Результаты опроса и применения карты, Unix-время последнего принятого ответа и ревизия применённой карты. Ответ с прежней ревизией подтверждает связь с CP. Сверьте ревизию с `/routes`. |
+| `oracache_raft_{is_leader,is_follower,has_leader,ready,term,commit_index,applied_index,snapshot_index,last_index}` | Признаки 0/1, терм и позиции в записях лога из одного `Status()` на scrape. Запись продвигает commit и applied. Конец лога включает незакоммиченные записи. Индекс снапшота до первого чекпоинта равен 0. |
+| `oracache_raft_stage_duration_seconds`, `oracache_raft_transport_send_errors_total` | Время выполнения команды в apply, ожидания результата ReadIndex до ожидания локального apply, кодирования чекпоинта и восстановления Store, в секундах. ReadIndex учитывает полученные результаты. Счётчик отправок учитывает ошибки вызова транспорта. Проверьте `_count` после GET/PUT, после чекпоинта и при установке снапшота. |
+| `process_cpu_seconds_total`, `process_resident_memory_bytes`, `go_memstats_heap_alloc_bytes`, `go_goroutines` | CPU-время процесса, RSS, занятый Go heap и число горутин. `rate(process_cpu_seconds_total[1m])` даёт занятые ядра. CPU и RSS проверены в Linux-контейнерах и могут отсутствовать при запуске на macOS. |
+| `oracache_storage_keys`, `oracache_storage_accounted_bytes` | `Store.Stats()` на каждой реплике даёт число ключей и байты, списанные из бюджета Store. Эти байты показаны отдельно от RSS. Сверьте изменение после PUT и DELETE. |
+
+Очередь применения считается по двум индексам одной реплики. Снимок
+метрик обновляется перед применением группы записей и после завершения
+итерации Raft, поэтому короткий разрыв может пройти между scrape. Для оценки
+отставания follower используется commit наблюдаемого лидера той же
+пары регион–партиция. Правило требует одного лидера в максимальном
+наблюдаемом терме, а разницу ограничивает снизу нулём из-за разновременных
+scrape. При неизвестном или неоднозначном лидере серия отсутствует.
+
+В «Ролях реплик по партициям» выберите «Регион матрицы» и, если нужно,
+конкретную «Партицию матрицы». `All` показывает все партиции выбранного
+региона. Строки таблицы — партиции, столбцы — ноды этого региона.
+Пагинация под таблицей переключает только страницы строк. `L` означает одного
+наблюдаемого лидера в максимальном терме, `F` — follower, `?` —
+лидерство не подтверждено, `↓` — пропал сигнал от реплики, которую
+Prometheus видел за последние 5 минут. `—` означает отсутствие данных о
+реплике в этой ячейке. Для проверки запланированных назначений используйте
+`cp-topology status` в профиле с etcd.
+
+#### Ожидаемые сигналы при отказах
+
+| Сценарий | Что проверить |
+| --- | --- |
+| Остановлен лидер, две ноды живы | `up` остановленной ноды равен 0. Другой лидер появляется с более высоким термом. GET через прежний адрес Gateway возвращает подтверждённую версию, следующий PUT подтверждается. Ревизия карты сохраняется. |
+| Разорвана связь Gateway с CP | `rpc_error` растёт, отметка последнего принятого ответа стоит, все пять scrape-целей остаются UP. GET и PUT доступны по последней карте при живой группе. |
+| Приостановлены два follower, CP работает | CP остаётся UP, Gateway получает конфигурацию, клиентский PUT с дедлайном теряет подтверждение. Когда лидерство теряется, серия отставания follower отсутствует. После снятия паузы PUT снова подтверждается. |
+
+`up` описывает доступность scrape. Ready и известный лидер показывают
+локальное состояние реплики. Доступность записи проверяется подтверждением
+реального PUT с дедлайном. Стенд покрывает одну группу в одном регионе и
+MemoryStore. WAN, WAL, TTL, AddNode и доля устаревших ответов остаются
+вне покрытия этого стенда со строгим GET. При повторном запуске процесс Storage Node начинает с
+пустой памятью. Восстановление прежнего участника Raft требует персистентного
+состояния Storage Node (#108).
+
+```sh
+docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml down --volumes
+```
+
+#### Проверка конфигураций Prometheus
+
+```sh
+docker run --rm --entrypoint /bin/promtool -v "$PWD/configs/monitoring:/checks:ro" -w /checks \
+  prom/prometheus:v3.5.0 check config prometheus.yml prometheus-real.yml
+docker run --rm --entrypoint /bin/promtool -v "$PWD/configs/monitoring:/checks:ro" -w /checks \
+  prom/prometheus:v3.5.0 test rules raft-rules.test.yml
+```
+
+### Мониторинг синтетических агентов
+
+Этот стенд запускает два агента с заданными ролями партиций, Prometheus
+и Grafana. Агенты имитируют heartbeat для проверки метрик. Для проверки
+смены лидера реальной Raft-группы используйте стенд выше. Prometheus опрашивает `/metrics` CP API и Gateway каждые 2 с.
+Оба веб-интерфейса доступны только через loopback. Grafana открывает готовый
+дашборд в режиме просмотра без входа.
+
+```sh
+docker compose -f compose.cp-monitoring.yaml config --quiet
+docker compose -f compose.cp-monitoring.yaml up -d --build
+docker compose -f compose.cp-monitoring.yaml ps
+```
+
+- [Дашборд OraCache · Control Plane и Gateway](http://localhost:3000/d/oracache-cp-monitoring)
+- [Цели сбора Prometheus](http://localhost:9090/targets)
+
+В терминале те же метрики можно запросить через API Prometheus. Для вывода
+меток и значений нужен `jq`.
+
+```sh
+prom_query() {
+  curl -fsS -G http://localhost:9090/api/v1/query --data-urlencode "query=$1" |
+    jq -c '.data.result[] | {labels: .metric, value: (.value[1] | tonumber)}'
+}
+
+prom_query 'up{job=~"cp-api|api-gateway"}'
+prom_query 'oracache_cp_heartbeat_age_seconds{job="cp-api"}'
+prom_query 'oracache_gateway_partitions_without_route{job="api-gateway"}'
+```
+
+1. После первых heartbeat, обновления карты и scrape обе цели показывают
+   `up=1`. Возраст heartbeat нод `eu-1` и `eu-2` обычно меньше 1 с.
+   Число партиций без маршрута равно 0 и для `operation="get"`, и для
+   `operation="put"`.
+2. Выполните `docker compose -f compose.cp-monitoring.yaml stop eu-1` и
+   повторяйте запросы. Возраст heartbeat `eu-1` растёт. Через примерно 20 с
+   (TTL 15 с, poll Gateway 2 с, scrape 2 с) обе серии Gateway показывают 64.
+   Обе цели сбора по-прежнему показывают `up=1`.
+3. Выполните `docker compose -f compose.cp-monitoring.yaml start eu-1`.
+   После нового heartbeat, poll и scrape возраст `eu-1` снова меньше 1 с,
+   а число партиций без маршрута возвращается к 0 для GET и PUT.
+
+Панели доступности показывают состояние последнего scrape каждой цели.
+Если scrape завершился ошибкой, Prometheus отдаёт `up=0`. Если серия
+отсутствует, Grafana показывает отсутствие данных. Ноль на графиках GET
+и PUT означает, что в текущей карте есть маршрут для всех партиций.
+
+```sh
+docker compose -f compose.cp-monitoring.yaml down
+```
+
 ---
 
 ## PoC без Control Plane
 
 В этом варианте Docker Compose запускает только три `storage-node`. Клиент обращается напрямую к нодам.
+
+Добавление пустой реплики и замена потерявшей состояние ноды без перезапуска
+группы описаны в [документации модуля shardraft](docs/shardraft.md#динамический-состав-группы):
+схемы вызовов, `--join`, административный HTTP API и ручной пример без Docker.
+Тот же Raft-протокол используется и при работе с CP; административный путь
+через Gateway описан выше.
+Бюджет Store в `storage-node` ограничен 8 МиБ для безопасной передачи snapshot.
 
 ### Запустить кластер
 
@@ -360,5 +573,6 @@ Docker-кеш независим: зависимости gateway/protobuf нах
 
 ## Исходная документация
 
+- [Модуль shardraft: устройство и динамический состав Raft-группы](docs/shardraft.md)
 - [Задание и целевая архитектура](docs/initial-task.md)
 - [Глоссарий](docs/GLOSSARY.md)

@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 2s
+  scrape_timeout: 1s
+
+scrape_configs:
+  - job_name: cp-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["cp-api:9464"]
+  - job_name: api-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api-gateway:9466"]

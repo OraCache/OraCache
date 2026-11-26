@@ -9,6 +9,7 @@ import (
 	"github.com/OraCache/oracache/internal/cpagent"
 	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/cpconfig/cpconfigtest"
+	"github.com/OraCache/oracache/shardraft"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -16,6 +17,14 @@ import (
 
 type noControlPlaneIO struct {
 	controlplanev1.ControlPlaneAPIClient
+}
+
+func TestMembershipCPModeStillValidatesPeer(t *testing.T) {
+	n := &Node{agent: &cpagent.Agent{}}
+	_, err := n.ChangeMembership(t.Context(), shardraft.MembershipChange{OperationID: "add", Action: "add-learner"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid peer accepted: %v", err)
+	}
 }
 
 func TestIntegratedStorageChecksWritePlacement(t *testing.T) {

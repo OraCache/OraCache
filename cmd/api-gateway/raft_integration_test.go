@@ -15,6 +15,7 @@ import (
 	gatewayv1 "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/cpapi"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/gateway"
 	"github.com/OraCache/oracache/internal/node"
 	"github.com/OraCache/oracache/internal/statestore"
@@ -95,7 +96,7 @@ func TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss(t *testing.T) {
 	poller := gateway.NewPoller(controlplanev1.NewControlPlaneAPIClient(cpConn), router, "test-gateway")
 	poller.Logger, poller.RPCTimeout = logger, 300*time.Millisecond
 	listener := raftTestListener(t)
-	_, stopGateway := serveGateway(listener, poller, logger)
+	_, stopGateway := serveGateway(listener, poller, cpmetrics.NewRegistry(), logger)
 	t.Cleanup(stopGateway)
 	client := gatewayv1.NewCacheGatewayClient(raftTestClient(t, listener))
 

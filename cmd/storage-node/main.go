@@ -1,4 +1,4 @@
-// storage-node runs one member of the static single-shard Raft group with the
+// storage-node runs one member of a single-shard Raft group with the
 // versioned in-memory LRU store. State is memory only: a stopped node must not
 // be restarted into a running group.
 package main
@@ -45,6 +45,7 @@ func main() {
 	flag.StringVar(&cfg.Region, "region", "region-a", "region ID")
 	flag.StringVar(&cfg.GroupID, "group-id", "region-a/shard-0/poc-1", "Raft group incarnation ID; identical on all members")
 	flag.Uint64Var(&cfg.PeerID, "peer-id", 0, "this member's Raft ID")
+	flag.BoolVar(&cfg.Join, "join", false, "join an existing group with a NEW peer ID; wait for AddLearner instead of bootstrapping")
 	flag.Var(&peers, "peer", "group member id,node-id,client-address,raft-url (repeat for every member, including this one)")
 	flag.StringVar(&cfg.GRPCAddr, "grpc-listen", "127.0.0.1:28091", "client gRPC listen address")
 	flag.StringVar(&cfg.RaftAddr, "raft-listen", "127.0.0.1:28191", "Raft HTTP transport listen address")
@@ -52,7 +53,7 @@ func main() {
 	flag.DurationVar(&cfg.HeartbeatInterval, "heartbeat-interval", 0, "CP heartbeat interval (zero follows the Control Plane hint)")
 	flag.StringVar(&readMode, "read-mode", "linearizable", "linearizable (leader ReadIndex) or local (possibly stale)")
 	flag.IntVar(&cfg.Store.MaxVersions, "max-versions", 0, "versions kept per key (0: store default)")
-	flag.Int64Var(&cfg.Store.MaxBytes, "max-bytes", 0, "store memory budget in bytes (0: store default)")
+	flag.Int64Var(&cfg.Store.MaxBytes, "max-bytes", 0, "store memory budget in bytes (0: 8 MiB; maximum 8 MiB for snapshot transport)")
 	flag.DurationVar(&cfg.TickInterval, "tick", 0, "Raft tick (0: default 100ms)")
 	flag.IntVar(&cfg.ElectionTicks, "election-ticks", 0, "Raft election ticks (0: default 10)")
 	flag.Uint64Var(&cfg.SnapshotEntries, "snapshot-entries", 0, "applied entries between snapshots (0: default)")

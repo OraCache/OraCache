@@ -1,0 +1,478 @@
+{
+  "uid": "oracache-real-cluster",
+  "title": "OraCache · Реальный кластер",
+  "schemaVersion": 41,
+  "refresh": "5s",
+  "time": {
+    "from": "now-5m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "raft_region",
+        "label": "Регион матрицы",
+        "type": "query",
+        "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+        "query": "label_values(oracache_raft_replica_state,region)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false
+      },
+      {
+        "name": "raft_partition",
+        "label": "Партиция матрицы",
+        "type": "query",
+        "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+        "query": "label_values(oracache_raft_replica_state{region=\"${raft_region}\"},partition)",
+        "refresh": 2,
+        "sort": 3,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"text":"All","value":"$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Доступность и Control Plane",
+      "gridPos": {"x":0,"y":0,"w":24,"h":1},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Цели сбора",
+      "description": "Доступность HTTP scrape по каждой из пяти целей.",
+      "gridPos": {"x":0,"y":1,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"none","noValue":"Нет данных","mappings":[{"type":"value","options":{"0":{"text":"Недоступен","color":"red"},"1":{"text":"Доступен","color":"green"}}}]},"overrides":[]},
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"textMode":"value_and_name","colorMode":"value"},
+      "targets": [
+        {"refId":"A","expr":"up{job=~\"cp-api|api-gateway|storage-node\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":true,"range":false}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Связь Gateway с CP",
+      "description": "Секунды с последнего принятого ответа. Ответ с той же ревизией обновляет отметку.",
+      "gridPos": {"x":12,"y":1,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"s","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"time() - oracache_gateway_config_last_success_timestamp_seconds","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Обновления карты Gateway",
+      "description": "Результаты обновления карты за последнюю минуту.",
+      "gridPos": {"x":0,"y":8,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"increase(oracache_gateway_config_refresh_total[1m])","legendFormat":"{{result}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Партиции без маршрута",
+      "description": "Ноль означает полное покрытие принятой картой. До первой карты серии отсутствуют.",
+      "gridPos": {"x":12,"y":8,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_gateway_partitions_without_route","legendFormat":"{{operation}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Возраст heartbeat",
+      "description": "Секунды с момента приёма CP последнего heartbeat от настроенной ноды.",
+      "gridPos": {"x":0,"y":15,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"s","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_cp_heartbeat_age_seconds","legendFormat":"{{region}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Ноды в последнем представлении CP",
+      "description": "Количество нод по состояниям последнего представления CP.",
+      "gridPos": {"x":12,"y":15,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_cp_live_nodes","legendFormat":"{{state}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Ревизии конфигурации",
+      "description": "Смена лидера может происходить при той же ревизии.",
+      "gridPos": {"x":0,"y":22,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_cp_config_revision","legendFormat":"CP","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"B","expr":"oracache_gateway_config_revision","legendFormat":"Gateway","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Длительность RPC Control Plane",
+      "description": "Перцентили времени ReportHeartbeat и GetConfig за минуту.",
+      "gridPos": {"x":12,"y":22,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"s","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"histogram_quantile(0.5, sum by (operation, le) (rate(oracache_cp_rpc_duration_seconds_bucket[1m])))","legendFormat":"{{operation}} · p50","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"B","expr":"histogram_quantile(0.95, sum by (operation, le) (rate(oracache_cp_rpc_duration_seconds_bucket[1m])))","legendFormat":"{{operation}} · p95","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"C","expr":"histogram_quantile(0.99, sum by (operation, le) (rate(oracache_cp_rpc_duration_seconds_bucket[1m])))","legendFormat":"{{operation}} · p99","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Клиентские RPC и пересылка",
+      "gridPos": {"x":0,"y":29,"w":24,"h":1},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Запросы в секунду",
+      "description": "Обработанные GET, PUT и DELETE на каждом слое. Storage суммирует реплики.",
+      "gridPos": {"x":0,"y":30,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"reqps","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\"}[1m]))","legendFormat":"{{job}} · {{operation}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Доменные исходы и коды gRPC",
+      "description": "Доменный MISS, конфликт и отсутствие записи при удалении приходят с кодом OK.",
+      "gridPos": {"x":12,"y":30,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"reqps","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"sum by (job, operation, outcome, grpc_code) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\"}[1m])) > 0","legendFormat":"{{job}} · {{operation}} · {{outcome}} · {{grpc_code}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Задержка Gateway",
+      "description": "Время обработчика Gateway включает маршрутизацию, пересылку и фактические повторы.",
+      "gridPos": {"x":0,"y":37,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"s","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"histogram_quantile(0.5, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[1m])))","legendFormat":"{{operation}} · p50","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"B","expr":"histogram_quantile(0.95, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[1m])))","legendFormat":"{{operation}} · p95","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"C","expr":"histogram_quantile(0.99, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[1m])))","legendFormat":"{{operation}} · p99","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Задержка Storage Node",
+      "description": "Время обработчика включает локальный Raft-путь. Перцентили агрегируются по репликам.",
+      "gridPos": {"x":12,"y":37,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"s","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"histogram_quantile(0.5, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"storage-node\"}[1m])))","legendFormat":"{{operation}} · p50","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"B","expr":"histogram_quantile(0.95, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"storage-node\"}[1m])))","legendFormat":"{{operation}} · p95","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"C","expr":"histogram_quantile(0.99, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"storage-node\"}[1m])))","legendFormat":"{{operation}} · p99","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Доля gRPC-ошибок",
+      "description": "Доля вызовов с кодом gRPC, отличным от OK. Без трафика доля не определена.",
+      "gridPos": {"x":0,"y":44,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"percentunit","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"(sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",grpc_code!=\"OK\"}[1m])) or (0 * sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\"}[1m])))) / (sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\"}[1m])) > 0)","legendFormat":"{{job}} · {{operation}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Доля попаданий GET",
+      "description": "Попадания среди успешных GET с исходами HIT, MISS и VERSION_NOT_FOUND. Ошибки gRPC в долю не входят. Если подходящих запросов нет, доля отсутствует.",
+      "gridPos": {"x":12,"y":44,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"percentunit","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"(sum by (job) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",operation=\"get\",grpc_code=\"OK\",outcome=\"hit\"}[1m])) or (0 * sum by (job) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",operation=\"get\",grpc_code=\"OK\",outcome=~\"hit|miss|version_not_found\"}[1m])))) / (sum by (job) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",operation=\"get\",grpc_code=\"OK\",outcome=~\"hit|miss|version_not_found\"}[1m])) > 0)","legendFormat":"{{job}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Пересылка Gateway",
+      "description": "Начатые исходящие RPC в секунду. Причина not_leader означает отправленную повторную попытку.",
+      "gridPos": {"x":0,"y":51,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"reqps","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"sum by (operation, reason) (rate(oracache_gateway_forward_attempts_total[1m]))","legendFormat":"{{operation}} · {{reason}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Ошибки отправки Raft",
+      "description": "Ошибки отправки сообщений Raft по репликам за минуту.",
+      "gridPos": {"x":12,"y":51,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"increase(oracache_raft_transport_send_errors_total[1m])","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 19,
+      "type": "row",
+      "title": "Реплики Raft",
+      "gridPos": {"x":0,"y":58,"w":24,"h":1},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 33,
+      "type": "table",
+      "title": "Роли реплик по партициям · ${raft_region}",
+      "description": "Каждая строка — партиция выбранного региона. L — один наблюдаемый лидер в максимальном терме; F — нода сообщает роль follower; ? — роль лидера не подтверждена или идёт переизбрание; ↓ — нет свежего сигнала от реплики, замеченной за последние 5 минут; — — данных о реплике для этой пары нет.",
+      "gridPos": {"x":0,"y":59,"w":24,"h":8},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [
+            {"type":"value","options":{"-1":{"text":"↓","color":"#803640"},"0":{"text":"?","color":"#704b21"},"1":{"text":"F","color":"#284e82"},"2":{"text":"L","color":"#246444"}}},
+            {"type":"special","options":{"match":"null","result":{"text":"—","color":"#26292e"}}}
+          ],
+          "custom": {"cellOptions":{"type":"color-background","mode":"basic"},"align":"center","minWidth":85}
+        },
+        "overrides": [
+          {"matcher":{"id":"byName","options":"partition\\node_id"},"properties":[{"id":"displayName","value":"Партиция"},{"id":"mappings","value":[]},{"id":"custom.cellOptions","value":{"type":"auto"}},{"id":"custom.align","value":"left"},{"id":"custom.width","value":120}]}
+        ]
+      },
+      "options": {"showHeader":true,"enablePagination":true,"cellHeight":"md"},
+      "transformations": [
+        {"id":"groupingToMatrix","options":{"rowField":"partition","columnField":"node_id","valueField":"Value","emptyValue":"null"}}
+      ],
+      "targets": [
+        {"refId":"A","expr":"oracache_raft_replica_state{region=\"${raft_region}\",partition=~\"${raft_partition:regex}\"}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"format":"table","instant":true,"range":false}
+      ]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Лидер, известное лидерство и Ready",
+      "description": "Локальные признаки из снимка каждой реплики. Доступность записи проверяется клиентским PUT.",
+      "gridPos": {"x":0,"y":67,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_raft_is_leader","legendFormat":"лидер · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"B","expr":"oracache_raft_is_follower","legendFormat":"follower · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"C","expr":"oracache_raft_has_leader","legendFormat":"знает лидера · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"D","expr":"oracache_raft_ready","legendFormat":"готова · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Raft term",
+      "description": "Текущий терм каждой реплики.",
+      "gridPos": {"x":12,"y":67,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_raft_term","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Индексы реплик",
+      "description": "Конец локального лога включает незакоммиченные записи. Snapshot index равен нулю до первого снапшота.",
+      "gridPos": {"x":0,"y":74,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_raft_commit_index","legendFormat":"commit · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"B","expr":"oracache_raft_applied_index","legendFormat":"applied · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"C","expr":"oracache_raft_snapshot_index","legendFormat":"snapshot · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"D","expr":"oracache_raft_last_index","legendFormat":"last · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Очередь применения",
+      "description": "Локальный commit_index минус локальный applied_index, в записях лога.",
+      "gridPos": {"x":12,"y":74,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_raft_commit_index - oracache_raft_applied_index","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Оценка отставания follower",
+      "description": "Commit наблюдаемого лидера минус applied follower той же группы. При неизвестном или неоднозначном лидере серия отсутствует.",
+      "gridPos": {"x":0,"y":81,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_raft_follower_lag_entries","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Длительность этапов Raft",
+      "description": "p95 исполнения команды, получения ReadIndex, кодирования чекпоинта и восстановления Store.",
+      "gridPos": {"x":12,"y":81,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"s","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"histogram_quantile(0.95, sum by (region, partition, node_id, stage, le) (rate(oracache_raft_stage_duration_seconds_bucket[1m])))","legendFormat":"{{stage}} · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 26,
+      "type": "row",
+      "title": "Ресурсы процессов",
+      "gridPos": {"x":0,"y":88,"w":24,"h":1},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "CPU процессов",
+      "description": "CPU-секунды за секунду. Значение 1 соответствует одному занятому ядру.",
+      "gridPos": {"x":0,"y":89,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"rate(process_cpu_seconds_total{job=~\"cp-api|api-gateway|storage-node\"}[1m])","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Резидентная память процессов",
+      "description": "Текущий RSS каждого процесса в байтах.",
+      "gridPos": {"x":12,"y":89,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"bytes","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"process_resident_memory_bytes{job=~\"cp-api|api-gateway|storage-node\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "Go heap",
+      "description": "Байты занятых объектов Go heap.",
+      "gridPos": {"x":0,"y":96,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"bytes","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"go_memstats_heap_alloc_bytes{job=~\"cp-api|api-gateway|storage-node\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Go-горутины",
+      "description": "Количество горутин по процессам.",
+      "gridPos": {"x":12,"y":96,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"go_goroutines{job=~\"cp-api|api-gateway|storage-node\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Учтённые байты Store",
+      "description": "Внутренний учёт памяти кэша по Store.Stats() каждой реплики.",
+      "gridPos": {"x":0,"y":103,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"bytes","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_storage_accounted_bytes","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Ключи в Store",
+      "description": "Число ключей по Store.Stats() каждой реплики.",
+      "gridPos": {"x":12,"y":103,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
+      "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
+      "targets": [
+        {"refId":"A","expr":"oracache_storage_keys","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+      ]
+    }
+  ]
+}

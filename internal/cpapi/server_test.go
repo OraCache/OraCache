@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -75,6 +79,77 @@ func validHeartbeat() *controlplanev1.HeartbeatRequest {
 		},
 		Resources: &controlplanev1.NodeResources{CpuMillis: 4000, MemoryBytes: 1 << 30, DiskFreeBytes: 1 << 40},
 	}
+}
+
+func TestHeartbeatAgeMetrics(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := &mutableClock{now: time.Unix(1000, 0)}
+	store := statestore.NewMemory()
+	srv := cpapi.New(store, cpapi.WithClock(clock), cpapi.WithNodeTTL(10*time.Second))
+	handler := srv.Metrics().Handler()
+	assertAge := func(want ...float64) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("metrics status = %d, body = %s", recorder.Code, recorder.Body)
+		}
+		parser := expfmt.NewTextParser(model.LegacyValidation)
+		families, err := parser.TextToMetricFamilies(recorder.Body)
+		if err != nil {
+			t.Fatalf("parse metrics: %v", err)
+		}
+		samples := families["oracache_cp_heartbeat_age_seconds"].GetMetric()
+		if len(samples) != len(want) {
+			t.Fatalf("heartbeat age samples = %v, want %d sample(s)", samples, len(want))
+		}
+		for i, sample := range samples {
+			labels := make(map[string]string)
+			for _, pair := range sample.GetLabel() {
+				labels[pair.GetName()] = pair.GetValue()
+			}
+			if len(labels) != 2 || labels["node_id"] != "eu-extra" || labels["region"] != "eu" ||
+				sample.GetGauge() == nil || sample.GetGauge().GetValue() != want[i] {
+				t.Fatalf("heartbeat age sample = %v, want eu/eu-extra age %g", sample, want[i])
+			}
+		}
+	}
+	beat := func(nodeID, region string) {
+		t.Helper()
+		req := validHeartbeat()
+		req.NodeId, req.Region = nodeID, region
+		if _, err := srv.ReportHeartbeat(ctx, req); err != nil {
+			t.Fatalf("ReportHeartbeat: %v", err)
+		}
+	}
+	cfg := cpconfigtest.Config(1)
+	cfg.Nodes = append(cfg.Nodes, cpconfig.Node{ID: "eu-extra", Region: "eu", Address: "10.0.0.3:7000"})
+	if err := store.ApplyConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	assertAge()
+	beat("unknown", "eu")
+	beat("eu-extra", "us")
+	assertAge()
+	beat("eu-extra", "eu")
+	assertAge(0)
+	clock.Advance(1500 * time.Millisecond)
+	assertAge(1.5)
+	clock.Advance(10 * time.Second)
+	beat("eu-extra", "us")
+	cfg.Revision = 2
+	if err := store.ApplyConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	assertAge(11.5)
+	beat("eu-extra", "eu")
+	clock.Advance(250 * time.Millisecond)
+	assertAge(0.25)
+	if err := store.ApplyConfig(ctx, cpconfigtest.Config(3)); err != nil {
+		t.Fatal(err)
+	}
+	assertAge()
 }
 
 func TestReportHeartbeatUsesServerReceiptTime(t *testing.T) {
@@ -479,6 +554,9 @@ func (s failingStore) UpsertHeartbeat(context.Context, statestore.Heartbeat) (ui
 func (s failingStore) Heartbeat(context.Context, string) (statestore.Heartbeat, bool, error) {
 	return statestore.Heartbeat{}, false, s.err
 }
+func (s failingStore) HeartbeatReceipts(context.Context) ([]statestore.HeartbeatReceipt, error) {
+	return nil, s.err
+}
 func (s failingStore) Config(context.Context) (statestore.Snapshot, error) {
 	return statestore.Snapshot{}, s.err
 }
@@ -546,5 +624,30 @@ func TestGRPCContractOverBufconn(t *testing.T) {
 	}
 	if resp.GetRevision() != 1 || resp.GetConfig() == nil {
 		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestCPRPCDurationsIncludeRejectedCalls(t *testing.T) {
+	t.Parallel()
+	srv := cpapi.New(statestore.NewMemory())
+	_, _ = srv.ReportHeartbeat(t.Context(), nil)
+	_, _ = srv.GetConfig(t.Context(), nil)
+	recorder := httptest.NewRecorder()
+	srv.Metrics().Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	parser := expfmt.NewTextParser(model.LegacyValidation)
+	families, err := parser.TextToMetricFamilies(recorder.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"report_heartbeat": true, "get_config": true}
+	for _, metric := range families["oracache_cp_rpc_duration_seconds"].GetMetric() {
+		for _, label := range metric.GetLabel() {
+			if label.GetName() == "operation" && metric.GetHistogram().GetSampleCount() == 1 {
+				delete(want, label.GetValue())
+			}
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing CP histogram samples: %v", want)
 	}
 }

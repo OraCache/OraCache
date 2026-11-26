@@ -1,5 +1,5 @@
 // Package node is the application layer inside one storage-node process. It
-// wraps the versioned store and one member of the static shard Raft group:
+// wraps the versioned store and one member of the shard Raft group:
 // config and constructors, the client gRPC API delegating to shardraft, the
 // HTTP Raft transport, the CP-agent heartbeat and lifecycle.
 //
@@ -23,9 +23,11 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
-	rpb "github.com/OraCache/oracache/gen/replication/v1"
+	membershipv1 "github.com/OraCache/oracache/gen/membership/v1"
+	replicationv1 "github.com/OraCache/oracache/gen/replication/v1"
 	"github.com/OraCache/oracache/internal/cpagent"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/replication"
 	"github.com/OraCache/oracache/internal/store"
 	"github.com/OraCache/oracache/shardraft"
@@ -36,8 +38,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Peer describes one member of the static group. The list is identical on all
-// processes; only Config.PeerID differs.
+// Peer describes an initial member or a seed for a joining process. Bootstrap
+// processes use identical lists; joining processes learn the committed registry.
 type Peer struct {
 	ID         uint64 // Raft ID, nonzero
 	NodeID     string // Control Plane node ID, e.g. "node-1"
@@ -52,6 +54,7 @@ type Config struct {
 	GroupID  string // identifies this incarnation of the group
 	PeerID   uint64
 	Peers    []Peer
+	Join     bool               // Peers are seeds; start empty and wait for AddLearner.
 	ReadMode shardraft.ReadMode // zero value: Linearizable
 
 	// Listen addresses; ignored when the matching Listener is supplied.
@@ -79,20 +82,19 @@ type Config struct {
 
 // Node is one storage-node module. Create with New, run with Run.
 type Node struct {
-	cfg      Config
-	log      *slog.Logger
-	store    *store.Store
-	inst     *shardraft.Instance
-	grpcLis  net.Listener
-	raftLis  net.Listener
-	httpSrv  *http.Server
-	grpcSrv  *grpc.Server
-	agent    *cpagent.Agent
-	cpConn   *grpc.ClientConn
-	httpCli  *http.Client
-	peerNode map[uint64]string
-	once     sync.Once
-	sender   *replication.Sender
+	cfg     Config
+	log     *slog.Logger
+	store   *store.Store
+	inst    *shardraft.Instance
+	grpcLis net.Listener
+	raftLis net.Listener
+	httpSrv *http.Server
+	grpcSrv *grpc.Server
+	agent   *cpagent.Agent
+	cpConn  *grpc.ClientConn
+	httpCli *http.Client
+	once    sync.Once
+	sender  *replication.Sender
 }
 
 // New validates the configuration, binds the listeners and builds the store and
@@ -119,19 +121,31 @@ func New(cfg Config) (*Node, error) {
 	}
 	cfg.Replication = replState.Config()
 	rc := &cfg.Replication
-	n := &Node{cfg: cfg, log: cfg.Logger.With("node", cfg.NodeID), peerNode: map[uint64]string{}}
+
+	// JSON checkpoints can expand keys up to 6x. Keep the single-message MVP
+	// safely below the 63 MiB snapshot ceiling, including membership metadata.
+	if cfg.Store.MaxBytes == 0 {
+		cfg.Store.MaxBytes = MaxStoreBytes
+	}
+	if cfg.Store.MaxBytes > MaxStoreBytes {
+		return nil, fmt.Errorf("node: max-bytes exceeds the %d-byte snapshot-safe MVP limit", MaxStoreBytes)
+	}
+	n := &Node{cfg: cfg, log: cfg.Logger.With("node", cfg.NodeID)}
 
 	raftPeers := make([]shardraft.Peer, 0, len(cfg.Peers))
 	addrs := make(map[uint64]string, len(cfg.Peers))
+	local := false
 	for _, p := range cfg.Peers {
 		if p.NodeID == "" || p.ClientAddr == "" || p.RaftURL == "" {
 			return nil, fmt.Errorf("node: peer %d needs node ID, client address and raft URL", p.ID)
 		}
-		raftPeers = append(raftPeers, shardraft.Peer{ID: p.ID, Address: p.ClientAddr})
+		raftPeers = append(raftPeers, shardraft.Peer{ID: p.ID, Address: p.ClientAddr, NodeID: p.NodeID, RaftAddress: p.RaftURL})
 		addrs[p.ID] = p.RaftURL
-		n.peerNode[p.ID] = p.NodeID
+		if p.ID == cfg.PeerID && p.NodeID == cfg.NodeID {
+			local = true
+		}
 	}
-	if n.peerNode[cfg.PeerID] != cfg.NodeID {
+	if !local {
 		return nil, fmt.Errorf("node: peer %d is not %q in the peer list", cfg.PeerID, cfg.NodeID)
 	}
 
@@ -143,13 +157,17 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	metrics := cpmetrics.NewRegistry()
+	metrics.RegisterProcessCollectors()
+	raftMetrics := newRaftMetrics(metrics.Prometheus(), n)
 	sm := NewStateMachine(n.store, replState)
 	n.inst, err = shardraft.NewInstance(shardraft.Config{
 		RegionID: cfg.Region, ShardID: cfg.ShardID, GroupID: cfg.GroupID,
-		PeerID: cfg.PeerID, Peers: raftPeers, ReadMode: cfg.ReadMode,
+		PeerID: cfg.PeerID, Peers: raftPeers, Join: cfg.Join, ReadMode: cfg.ReadMode,
 		TickInterval: cfg.TickInterval, ElectionTicks: cfg.ElectionTicks,
 		RequestTimeout: cfg.RequestTimeout, SnapshotEntries: cfg.SnapshotEntries,
-		Logger: &raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)},
+		Observer: raftMetrics,
+		Logger:   &raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)},
 	}, sm, transport)
 	if err != nil {
 		return nil, err
@@ -164,7 +182,9 @@ func New(cfg Config) (*Node, error) {
 	}
 
 	if cfg.CPAddr != "" {
-		n.cpConn, err = grpc.NewClient(cfg.CPAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		n.cpConn, err = grpc.NewClient(cfg.CPAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDisableServiceConfig())
 		if err != nil {
 			n.grpcLis.Close()
 			n.raftLis.Close()
@@ -186,19 +206,22 @@ func New(cfg Config) (*Node, error) {
 
 	mux := http.NewServeMux()
 	mux.Handle("/raft", n.inst.RaftHandler())
+	mux.Handle("/metrics", metrics.Handler())
+	mux.HandleFunc("/membership", n.membershipHTTP)
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(n.inst.Status())
 	})
 	n.httpSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	serverOptions := []grpc.ServerOption{grpc.MaxRecvMsgSize(16 << 20)}
+	interceptors := []grpc.UnaryServerInterceptor{cpmetrics.CacheRPCInterceptor(metrics.Prometheus())}
 	if n.agent != nil {
-		serverOptions = append(serverOptions, grpc.UnaryInterceptor(n.requireMasterForWrites))
+		interceptors = append(interceptors, n.requireMasterForWrites)
 	}
-	n.grpcSrv = grpc.NewServer(serverOptions...)
+	n.grpcSrv = grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.ChainUnaryInterceptor(interceptors...))
 	pb.RegisterCacheGatewayServer(n.grpcSrv, shardraft.GatewayServer(n.inst))
+	membershipv1.RegisterMembershipAdminServer(n.grpcSrv, &membershipServer{n: n})
 	if rc.SourceRegion != "" {
-		rpb.RegisterReplicationServiceServer(n.grpcSrv, &replication.Receiver{Destination: n.inst})
+		replicationv1.RegisterReplicationServiceServer(n.grpcSrv, &replication.Receiver{Destination: n.inst})
 	}
 	if rc.TargetRegion != "" {
 		n.sender, err = replication.NewSender(
@@ -250,8 +273,21 @@ func (n *Node) requireMasterForWrites(ctx context.Context, req any, info *grpc.U
 		}
 		node, assigned := config.NodeByID(n.cfg.NodeID)
 		assignment, placed := config.Assignment(n.cfg.Region, n.cfg.ShardID)
-		if !assigned || node.Region != n.cfg.Region || node.State == cpconfig.NodeStateDraining ||
-			!placed || !slices.Contains(assignment.ReplicaNodeIDs, n.cfg.NodeID) {
+		if assigned && (node.Region != n.cfg.Region || node.State == cpconfig.NodeStateDraining) {
+			return nil, status.Error(codes.FailedPrecondition, "storage node has no active placement for this partition")
+		}
+		member := false
+		if n.inst != nil {
+			for _, peer := range n.inst.Membership().Members {
+				if peer.ID == n.cfg.PeerID && peer.NodeID == n.cfg.NodeID && peer.Voter {
+					member = true
+					break
+				}
+			}
+		} else {
+			member = assigned && placed && slices.Contains(assignment.ReplicaNodeIDs, n.cfg.NodeID)
+		}
+		if !member {
 			return nil, status.Error(codes.FailedPrecondition, "storage node has no active placement for this partition")
 		}
 	}
@@ -260,7 +296,7 @@ func (n *Node) requireMasterForWrites(ctx context.Context, req any, info *grpc.U
 
 // PartitionStatuses implements cpagent.StatusProvider with the actual status.
 func (n *Node) PartitionStatuses(context.Context) ([]*controlplanev1.PartitionStatus, error) {
-	s := n.inst.Status()
+	s, m := n.inst.HeartbeatState()
 	ps := &controlplanev1.PartitionStatus{
 		PartitionId:  s.ShardID,
 		Role:         protoRole(s.Role),
@@ -270,7 +306,22 @@ func (n *Node) PartitionStatuses(context.Context) ([]*controlplanev1.PartitionSt
 		Ready:        s.Ready && s.Running && (n.agent == nil || n.agent.Config() != nil),
 	}
 	if s.LeaderID != 0 {
-		ps.LeaderId = n.peerNode[s.LeaderID]
+		for _, member := range m.Members {
+			if member.ID == s.LeaderID {
+				ps.LeaderId = member.NodeID
+				break
+			}
+		}
+	}
+	if s.IsLearner {
+		ps.Role = controlplanev1.RaftRole_RAFT_ROLE_LEARNER
+	}
+	if s.Role == "StateLeader" && m.Index > 0 && len(m.Members) > 0 {
+		wire := &controlplanev1.GroupMembership{GroupId: m.GroupID, Region: n.cfg.Region, PartitionId: s.ShardID, ReporterPeerId: n.cfg.PeerID, ConfigIndex: m.Index, Joint: m.Joint, RemovedIds: m.RemovedIDs}
+		for _, peer := range m.Members {
+			wire.Members = append(wire.Members, &controlplanev1.GroupMember{PeerId: peer.ID, NodeId: peer.NodeID, Address: peer.Address, RaftAddress: peer.RaftAddress, Voter: peer.Voter, Learner: peer.Learner, OutgoingVoter: peer.OutgoingVoter})
+		}
+		ps.Membership = wire
 	}
 	return []*controlplanev1.PartitionStatus{ps}, nil
 }
@@ -302,6 +353,18 @@ func (n *Node) Run(ctx context.Context) error {
 	go func() { serveErr <- n.grpcSrv.Serve(n.grpcLis) }()
 	go func() { serveErr <- n.httpSrv.Serve(n.raftLis) }()
 	if n.agent != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-n.inst.MembershipEvents():
+					n.agent.TriggerHeartbeat()
+				}
+			}
+		}()
 		wg.Add(1)
 		go func() { defer wg.Done(); _ = n.agent.Run(ctx) }()
 	}
