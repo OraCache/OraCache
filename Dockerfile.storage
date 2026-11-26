@@ -10,6 +10,7 @@ COPY cmd/storage-node ./cmd/storage-node
 COPY internal/cpagent ./internal/cpagent
 COPY internal/cpconfig ./internal/cpconfig
 COPY internal/node ./internal/node
+COPY internal/replication ./internal/replication
 COPY internal/store ./internal/store
 COPY shardraft ./shardraft
 RUN CGO_ENABLED=0 go build -trimpath -o /storage-node ./cmd/storage-node

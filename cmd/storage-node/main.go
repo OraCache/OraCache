@@ -57,6 +57,10 @@ func main() {
 	flag.DurationVar(&cfg.TickInterval, "tick", 0, "Raft tick (0: default 100ms)")
 	flag.IntVar(&cfg.ElectionTicks, "election-ticks", 0, "Raft election ticks (0: default 10)")
 	flag.Uint64Var(&cfg.SnapshotEntries, "snapshot-entries", 0, "applied entries between snapshots (0: default)")
+	flag.StringVar(&cfg.Replication.TargetRegion, "replication-target-region", "", "enable outgoing replication to this region")
+	flag.StringVar(&cfg.Replication.SourceRegion, "replication-source-region", "", "accept incoming replication only from this region; reject client writes")
+	flag.StringVar(&cfg.Replication.SourceGroupID, "replication-source-group", "", "exact source Raft group incarnation ID")
+	flag.IntVar(&cfg.Replication.OutboxLimit, "replication-outbox-limit", 0, "pending changes allowed before rejecting writes (0: 10000)")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")

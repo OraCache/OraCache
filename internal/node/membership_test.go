@@ -14,6 +14,7 @@ import (
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/node"
+	"github.com/OraCache/oracache/internal/replication"
 	"github.com/OraCache/oracache/internal/store"
 	"github.com/OraCache/oracache/shardraft"
 	"google.golang.org/grpc"
@@ -190,7 +191,7 @@ func TestRaftStoreSnapshotBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fsm := node.NewStateMachine(backend)
+	fsm := node.NewStateMachine(backend, &replication.State{})
 	// Escaped JSON keys can expand 6x. Reject the Store's oversized-single-key
 	// exception at the Raft boundary before it can become untransferable state.
 	got, err := fsm.Put(t.Context(), &pb.PutRequest{Key: strings.Repeat("\x00", 16<<10)})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	rpb "github.com/OraCache/oracache/gen/replication/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -19,6 +20,9 @@ const (
 	opDelete
 	opBatchGet
 	opBatchPut
+	opReadOutbox
+	opAckOutbox
+	opReplicate
 )
 
 // A versioned 18-byte header precedes the unmodified protobuf request:
@@ -43,7 +47,7 @@ func decodeCommand(data []byte) (operation, requestID, []byte, error) {
 		return 0, id, nil, fmt.Errorf("invalid command header")
 	}
 	op := operation(data[1])
-	if op != opPut && op != opDelete && op != opBatchPut {
+	if op != opPut && op != opDelete && op != opBatchPut && op != opAckOutbox && op != opReplicate {
 		return 0, id, nil, fmt.Errorf("invalid replicated operation %d", op)
 	}
 	copy(id[:], data[2:commandHeader])
@@ -66,6 +70,12 @@ func decodeRequest(op operation, data []byte) (proto.Message, error) {
 		message = &pb.BatchGetRequest{}
 	case opBatchPut:
 		message = &pb.BatchPutRequest{}
+	case opReadOutbox:
+		message = &rpb.ReadOutboxRequest{}
+	case opAckOutbox:
+		message = &rpb.AckOutboxRequest{}
+	case opReplicate:
+		message = &rpb.ReplicateRequest{}
 	default:
 		return nil, fmt.Errorf("unknown operation")
 	}
@@ -83,6 +93,22 @@ func validateRequest(message proto.Message) error {
 		return bad()
 	}
 	switch r := message.(type) {
+	case *rpb.ReadOutboxRequest:
+	case *rpb.AckOutboxRequest:
+		if r.Id == 0 {
+			return bad()
+		}
+	case *rpb.ReplicateRequest:
+		if r.SourceRegion == "" || r.TargetRegion == "" || r.StreamId == "" || r.Entry.GetId() == 0 || r.Entry.GetKey() == "" {
+			return bad()
+		}
+		var prev uint64
+		for _, v := range r.Entry.Versions {
+			if v == nil || v.Rev <= prev {
+				return bad()
+			}
+			prev = v.Rev
+		}
 	case *pb.GetRequest:
 		if r.Key == "" {
 			return bad()
@@ -130,6 +156,21 @@ func (n *Instance) execute(message proto.Message) (response proto.Message, err e
 	}()
 	ctx := context.Background()
 	switch r := message.(type) {
+	case *rpb.ReadOutboxRequest:
+		if sm, ok := n.cache.(ReplicationStateMachine); ok {
+			return sm.ReadOutbox()
+		}
+		return nil, status.Error(codes.FailedPrecondition, "replication is not configured")
+	case *rpb.AckOutboxRequest:
+		if sm, ok := n.cache.(ReplicationStateMachine); ok {
+			return sm.AckOutbox(r)
+		}
+		return nil, status.Error(codes.FailedPrecondition, "replication is not configured")
+	case *rpb.ReplicateRequest:
+		if sm, ok := n.cache.(ReplicationStateMachine); ok {
+			return sm.Replicate(r)
+		}
+		return nil, status.Error(codes.FailedPrecondition, "replication is not configured")
 	case *pb.GetRequest:
 		return n.cache.Get(ctx, r)
 	case *pb.PutRequest:
