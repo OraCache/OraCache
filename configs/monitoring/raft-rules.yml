@@ -1,12 +1,21 @@
 groups:
   - name: ora-raft
     rules:
+      # Keep the legacy term signal in groups where CP has no membership yet.
+      - record: oracache_raft_member_term
+        expr: |
+          oracache_raft_term
+          and on (region, partition, node_id) oracache_cp_raft_member{job="cp-api"}
+          or (
+            oracache_raft_term
+            unless on (region, partition) oracache_cp_raft_member{job="cp-api"}
+          )
       - record: oracache_raft_leader_at_max_term
         expr: |
           (oracache_raft_is_leader == 1)
           and
-          (oracache_raft_term == on (region, partition) group_left
-            max by (region, partition) (oracache_raft_term))
+          (oracache_raft_member_term == on (region, partition) group_left
+            max by (region, partition) (oracache_raft_member_term))
           and on (job, instance) (up{job="storage-node"} == 1)
       - record: oracache_raft_follower_lag_entries
         expr: |
@@ -34,9 +43,14 @@ groups:
                 and on (region, partition)
                   (count by (region, partition) (oracache_raft_leader_at_max_term) == 1)
               )
+              or (3 * (oracache_raft_is_learner == 1))
               or (oracache_raft_is_follower == 1)
-              or (0 * oracache_raft_is_leader)
             )
             and on (job, instance) (up{job="storage-node"} == 1)
           )
-          or (-1 * max by (region, partition, node_id) (present_over_time(oracache_raft_term[5m])))
+          and on (region, partition, node_id) oracache_cp_raft_member{job="cp-api"}
+          or (
+            -1 * max by (region, partition, node_id) (oracache_cp_raft_member{job="cp-api"})
+            and on (region, node_id) (max by (region, node_id) (up{job="storage-node"}) == 0)
+          )
+          or (0 * max by (region, partition, node_id) (oracache_cp_raft_member{job="cp-api"}))

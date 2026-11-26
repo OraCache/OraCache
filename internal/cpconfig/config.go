@@ -134,6 +134,7 @@ type Node struct {
 	ID            string `json:"id"`
 	Region        string `json:"region"`
 	Address       string `json:"address"`
+	RaftAddress   string `json:"raft_address,omitempty"` // CP bootstrap discovery only
 	State         string `json:"state,omitempty"`
 	CapacityBytes uint64 `json:"capacity_bytes,omitempty"`
 	Zone          string `json:"zone,omitempty"`

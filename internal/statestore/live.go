@@ -14,6 +14,7 @@ func projectLiveConfig(snapshot Snapshot, memberships map[groupKey]cpconfig.Grou
 		return snapshot
 	}
 	config := snapshot.Config.Clone()
+	firstApplied := len(config.Memberships)
 	for _, m := range memberships {
 		copyOf := m
 		copyOf.Members = append([]cpconfig.GroupMember(nil), m.Members...)
@@ -188,5 +189,6 @@ func projectLiveConfig(snapshot Snapshot, memberships map[groupKey]cpconfig.Grou
 		Revision:                 snapshot.Revision,
 		Config:                   config,
 		MissingReplicaHeartbeats: missingReplicaHeartbeats,
+		AppliedMemberships:       config.Memberships[firstApplied:],
 	}
 }

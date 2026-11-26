@@ -6,11 +6,19 @@ tests:
   - name: follower lag requires one leader in the highest observed term and a live follower
     interval: 1m
     input_series:
-      - series: 'up{job="storage-node", instance="a"}'
-        values: '1 1 1 0 1'
-      - series: 'up{job="storage-node", instance="b"}'
+      - series: 'oracache_cp_raft_member{job="cp-api", node_id="a", region="r", partition="0"}'
         values: '1 1 1 1 1'
-      - series: 'up{job="storage-node", instance="c"}'
+      - series: 'oracache_cp_raft_member{job="cp-api", node_id="b", region="r", partition="0"}'
+        values: '1 1 1 1 1'
+      - series: 'oracache_cp_raft_member{job="cp-api", node_id="c", region="r", partition="0"}'
+        values: '1 1 1 1 1'
+      - series: 'oracache_cp_raft_member{job="cp-api", node_id="b1", region="other", partition="0"}'
+        values: '1 1 1 1 1'
+      - series: 'up{job="storage-node", instance="a", node_id="a", region="r"}'
+        values: '1 1 1 0 1'
+      - series: 'up{job="storage-node", instance="b", node_id="b", region="r"}'
+        values: '1 1 1 1 1'
+      - series: 'up{job="storage-node", instance="c", node_id="c", region="r"}'
         values: '1 1 1 1 0'
       - series: 'oracache_raft_is_leader{job="storage-node", instance="a", node_id="a", region="r", partition="0"}'
         values: '1 1 1 stale 1'
@@ -34,7 +42,7 @@ tests:
         values: '8 9 11 13 14'
       - series: 'oracache_raft_applied_index{job="storage-node", instance="c", node_id="c", region="r", partition="0"}'
         values: '10 10 11 12 13'
-      - series: 'up{job="storage-node", instance="b1"}'
+      - series: 'up{job="storage-node", instance="b1", node_id="b1", region="other"}'
         values: '1 1 1 1 1'
       - series: 'oracache_raft_term{job="storage-node", instance="b1", node_id="b1", region="other", partition="0"}'
         values: '1 1 1 1 1'
@@ -105,4 +113,65 @@ tests:
           - labels: 'oracache_raft_replica_state{node_id="c", region="r", partition="0"}'
             value: -1
           - labels: 'oracache_raft_replica_state{node_id="b1", region="other", partition="0"}'
+            value: 2
+  - name: membership gates roles and distinguishes down from a missing sample
+    interval: 1m
+    input_series:
+      - series: 'oracache_cp_raft_member{job="cp-api", node_id="new", region="a", partition="0"}'
+        values: '1 1 1 stale'
+      - series: 'oracache_cp_raft_member{job="cp-api", node_id="other", region="b", partition="0"}'
+        values: '1 1 1 1'
+      - series: 'up{job="storage-node", instance="new", node_id="new", region="a"}'
+        values: '1 1 0 1'
+      - series: 'oracache_raft_is_learner{job="storage-node", instance="new", node_id="new", region="a", partition="0"}'
+        values: '1 0 stale 0'
+      - series: 'oracache_raft_is_follower{job="storage-node", instance="new", node_id="new", region="a", partition="0"}'
+        values: '0 1 stale 1'
+    promql_expr_test:
+      - expr: oracache_raft_replica_state
+        eval_time: 0m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="new", region="a", partition="0"}'
+            value: 3
+          - labels: 'oracache_raft_replica_state{node_id="other", region="b", partition="0"}'
+            value: 0
+      - expr: oracache_raft_replica_state{node_id="new"}
+        eval_time: 1m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="new", region="a", partition="0"}'
+            value: 1
+      - expr: oracache_raft_replica_state{node_id="new"}
+        eval_time: 2m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="new", region="a", partition="0"}'
+            value: -1
+      - expr: oracache_raft_replica_state{node_id="new"}
+        eval_time: 3m
+        exp_samples: []
+  - name: a removed peer's final scrapes cannot hide the current leader
+    input_series:
+      - series: 'oracache_cp_raft_member{job="cp-api", node_id="current", region="a", partition="0"}'
+        values: '1 1'
+      - series: 'up{job="storage-node", instance="current", node_id="current", region="a"}'
+        values: '1 1'
+      - series: 'up{job="storage-node", instance="removed", node_id="removed", region="a"}'
+        values: '1 1'
+      - series: 'oracache_raft_term{job="storage-node", instance="current", node_id="current", region="a", partition="0"}'
+        values: '4 4'
+      - series: 'oracache_raft_is_leader{job="storage-node", instance="current", node_id="current", region="a", partition="0"}'
+        values: '1 1'
+      - series: 'oracache_raft_term{job="storage-node", instance="removed", node_id="removed", region="a", partition="0"}'
+        values: '4 5'
+      - series: 'oracache_raft_is_leader{job="storage-node", instance="removed", node_id="removed", region="a", partition="0"}'
+        values: '1 1'
+    promql_expr_test:
+      - expr: oracache_raft_replica_state
+        eval_time: 0m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="current", region="a", partition="0"}'
+            value: 2
+      - expr: oracache_raft_replica_state
+        eval_time: 1m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="current", region="a", partition="0"}'
             value: 2

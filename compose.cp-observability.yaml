@@ -1,5 +1,10 @@
 # Add to compose.cp.yaml to monitor the real single-group cluster.
 services:
+  cp-api:
+    command: [/cp-api, --config=/cp-config.json, --listen=0.0.0.0:28081, --metrics-listen=0.0.0.0:9464, --membership-state=/state/membership.json]
+    volumes:
+      - cp-membership:/state
+
   prometheus:
     extends:
       file: compose.cp-monitoring.yaml
@@ -14,3 +19,6 @@ services:
       service: grafana
     environment:
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/oracache-real.json
+
+volumes:
+  cp-membership:

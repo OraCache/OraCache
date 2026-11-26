@@ -130,6 +130,8 @@ func New(store statestore.Store, opts ...Option) *Server {
 	s.getConfigDuration = duration.WithLabelValues("get_config")
 	s.startedAt = s.clock.Now()
 	s.metrics.RegisterGaugeFunc(cpmetrics.HeartbeatAge, "Seconds since the CP API received the last heartbeat from a configured node.", s.heartbeatAges)
+	s.metrics.RegisterGaugeFunc("oracache_cp_raft_member", "Replica in the last applied Raft group membership received by Control Plane.", s.raftMembers)
+	s.metrics.RegisterGaugeFunc("oracache_cp_raft_membership_fresh", "Raft membership confirmation: 1 current, 0 last known, -1 unknown.", s.raftMembershipFreshness)
 	return s
 }
 

@@ -14,5 +14,11 @@ scrape_configs:
     static_configs:
       - targets: ["api-gateway:9466"]
   - job_name: storage-node
-    static_configs:
-      - targets: ["node-1:28191", "node-2:28191", "node-3:28191"]
+    metrics_path: /metrics
+    follow_redirects: false
+    http_sd_configs:
+      - url: http://cp-api:9464/discovery/storage-nodes?region=region-a
+        refresh_interval: 2s
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: exported_(node_id|region)

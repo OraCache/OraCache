@@ -23,6 +23,7 @@
 /configs/monitoring/ @pluplohapy @petruekhin
 /compose.cp-monitoring.yaml @pluplohapy @petruekhin
 /compose.cp-observability.yaml @pluplohapy @petruekhin
+/compose.replication-observability.yaml @pluplohapy @petruekhin
 /Dockerfile.cp-poc @pluplohapy @petruekhin
 
 # Gateway и Data Plane.

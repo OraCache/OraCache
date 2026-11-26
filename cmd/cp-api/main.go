@@ -45,6 +45,7 @@ func serveMetrics(listen string, api *cpapi.Server, logger *slog.Logger) error {
 	api.Metrics().RegisterProcessCollectors()
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", api.Metrics().Handler())
+	mux.HandleFunc("GET /discovery/storage-nodes", api.StorageDiscovery)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -69,7 +70,8 @@ func main() {
 	configPath := flag.String("config", "", "optional JSON config snapshot loaded into the in-memory store")
 	nodeTTL := flag.Duration("node-ttl", cpapi.DefaultNodeTTL, "node liveness TTL without heartbeat")
 	devCluster := flag.Bool("dev-cluster", false, "load a synthetic 2-region, 2-node-per-region, 128-partition cluster instead of -config")
-	metricsListen := flag.String("metrics-listen", defaultMetricsListen, `HTTP listen address for /metrics and /healthz ("none" disables)`)
+	metricsListen := flag.String("metrics-listen", defaultMetricsListen, `HTTP listen address for metrics, health and storage discovery ("none" disables)`)
+	membershipFile := flag.String("membership-state", "", "optional Raft membership checkpoint file for storage discovery")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
@@ -85,7 +87,11 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	store := statestore.NewMemory()
+	store, err := statestore.OpenMemory(*membershipFile)
+	if err != nil {
+		logger.Error("open Raft membership state", "error", err)
+		os.Exit(1)
+	}
 	revision := uint64(0)
 	if *devCluster {
 		cfg := cpconfig.SyntheticDevCluster()
