@@ -1,9 +1,13 @@
 name: oracache-replication
 
-x-a: &a
+x-image: &image
+  image: ${ORACACHE_CP_IMAGE:-oracache-cp:local}
   build:
     context: .
-    dockerfile: Dockerfile.storage
+    dockerfile: Dockerfile.cp
+
+x-a: &a
+  <<: *image
   depends_on: [cp-api]
   entrypoint:
     - /storage-node
@@ -19,9 +23,7 @@ x-a: &a
     - --replication-target-region=region-b
 
 x-b: &b
-  build:
-    context: .
-    dockerfile: Dockerfile.storage
+  <<: *image
   depends_on: [cp-api]
   entrypoint:
     - /storage-node
@@ -39,33 +41,31 @@ x-b: &b
 
 services:
   cp-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.cp
+    <<: *image
     command: [/cp-api, --config=/replication-config.json, --listen=0.0.0.0:28081, --metrics-listen=none]
     volumes:
       - ./configs/cp-replication-compose.json:/replication-config.json:ro
   a-1:
     <<: *a
     command: [--node-id=a-1, --peer-id=1]
-    ports: ["127.0.0.1:28091:28091", "127.0.0.1:28191:28191"]
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-28091}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-28191}:28191"]
   a-2:
     <<: *a
     command: [--node-id=a-2, --peer-id=2]
-    ports: ["127.0.0.1:28092:28091", "127.0.0.1:28192:28191"]
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-28092}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-28192}:28191"]
   a-3:
     <<: *a
     command: [--node-id=a-3, --peer-id=3]
-    ports: ["127.0.0.1:28093:28091", "127.0.0.1:28193:28191"]
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-28093}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-28193}:28191"]
   b-1:
     <<: *b
     command: [--node-id=b-1, --peer-id=1]
-    ports: ["127.0.0.1:29091:28091", "127.0.0.1:29191:28191"]
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-29091}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-29191}:28191"]
   b-2:
     <<: *b
     command: [--node-id=b-2, --peer-id=2]
-    ports: ["127.0.0.1:29092:28091", "127.0.0.1:29192:28191"]
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-29092}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-29192}:28191"]
   b-3:
     <<: *b
     command: [--node-id=b-3, --peer-id=3]
-    ports: ["127.0.0.1:29093:28091", "127.0.0.1:29193:28191"]
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-29093}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-29193}:28191"]
