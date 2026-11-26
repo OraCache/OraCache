@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package replication.v1;
+option go_package = "github.com/OraCache/oracache/gen/replication/v1;replicationv1";
+
+// Internal, trusted-network API. A response means destination Raft commit+apply.
+service ReplicationService {
+  rpc Replicate(ReplicateRequest) returns (ReplicateResponse);
+}
+
+message Version {
+  uint64 rev = 1;
+  bytes data = 2;
+}
+
+message Entry {
+  uint64 id = 1;
+  string key = 2;
+  // Complete current retained version set. Empty means delete the key.
+  repeated Version versions = 3;
+}
+
+message ReplicateRequest {
+  string source_region = 1;
+  string target_region = 2;
+  uint32 shard_id = 3;
+  // Fixed source Raft GroupID, not the current leader or term.
+  string stream_id = 4;
+  Entry entry = 5;
+}
+
+message ReplicateResponse {
+  uint64 applied_id = 1;
+}
+
+// Local Instance API; these methods are not exposed as network RPCs.
+message ReadOutboxRequest {}
+message ReadOutboxResponse {
+  Entry entry = 1;
+}
+message AckOutboxRequest {
+  uint64 id = 1;
+}
+message AckOutboxResponse {}

@@ -1,0 +1,71 @@
+name: oracache-replication
+
+x-a: &a
+  build:
+    context: .
+    dockerfile: Dockerfile.storage
+  depends_on: [cp-api]
+  entrypoint:
+    - /storage-node
+    - --cp-addr=cp-api:28081
+    - --heartbeat-interval=1s
+    - --grpc-listen=0.0.0.0:28091
+    - --raft-listen=0.0.0.0:28191
+    - --region=region-a
+    - --group-id=region-a/shard-0/replication-1
+    - --peer=1,a-1,a-1:28091,http://a-1:28191/raft
+    - --peer=2,a-2,a-2:28091,http://a-2:28191/raft
+    - --peer=3,a-3,a-3:28091,http://a-3:28191/raft
+    - --replication-target-region=region-b
+
+x-b: &b
+  build:
+    context: .
+    dockerfile: Dockerfile.storage
+  depends_on: [cp-api]
+  entrypoint:
+    - /storage-node
+    - --cp-addr=cp-api:28081
+    - --heartbeat-interval=1s
+    - --grpc-listen=0.0.0.0:28091
+    - --raft-listen=0.0.0.0:28191
+    - --region=region-b
+    - --group-id=region-b/shard-0/replication-1
+    - --peer=1,b-1,b-1:28091,http://b-1:28191/raft
+    - --peer=2,b-2,b-2:28091,http://b-2:28191/raft
+    - --peer=3,b-3,b-3:28091,http://b-3:28191/raft
+    - --replication-source-region=region-a
+    - --replication-source-group=region-a/shard-0/replication-1
+
+services:
+  cp-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.cp
+    command: [/cp-api, --config=/replication-config.json, --listen=0.0.0.0:28081, --metrics-listen=none]
+    volumes:
+      - ./configs/cp-replication-compose.json:/replication-config.json:ro
+  a-1:
+    <<: *a
+    command: [--node-id=a-1, --peer-id=1]
+    ports: ["127.0.0.1:28091:28091", "127.0.0.1:28191:28191"]
+  a-2:
+    <<: *a
+    command: [--node-id=a-2, --peer-id=2]
+    ports: ["127.0.0.1:28092:28091", "127.0.0.1:28192:28191"]
+  a-3:
+    <<: *a
+    command: [--node-id=a-3, --peer-id=3]
+    ports: ["127.0.0.1:28093:28091", "127.0.0.1:28193:28191"]
+  b-1:
+    <<: *b
+    command: [--node-id=b-1, --peer-id=1]
+    ports: ["127.0.0.1:29091:28091", "127.0.0.1:29191:28191"]
+  b-2:
+    <<: *b
+    command: [--node-id=b-2, --peer-id=2]
+    ports: ["127.0.0.1:29092:28091", "127.0.0.1:29192:28191"]
+  b-3:
+    <<: *b
+    command: [--node-id=b-3, --peer-id=3]
+    ports: ["127.0.0.1:29093:28091", "127.0.0.1:29193:28191"]

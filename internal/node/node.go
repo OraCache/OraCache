@@ -23,8 +23,10 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	rpb "github.com/OraCache/oracache/gen/replication/v1"
 	"github.com/OraCache/oracache/internal/cpagent"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/replication"
 	"github.com/OraCache/oracache/internal/store"
 	"github.com/OraCache/oracache/shardraft"
 	"go.etcd.io/raft/v3"
@@ -63,7 +65,8 @@ type Config struct {
 	HeartbeatInterval  time.Duration
 	ConfigPullInterval time.Duration
 
-	Store store.Config
+	Store       store.Config
+	Replication replication.Config
 
 	// Raft timing; zero values select shardraft defaults.
 	TickInterval    time.Duration
@@ -89,6 +92,7 @@ type Node struct {
 	httpCli  *http.Client
 	peerNode map[uint64]string
 	once     sync.Once
+	sender   *replication.Sender
 }
 
 // New validates the configuration, binds the listeners and builds the store and
@@ -103,6 +107,18 @@ func New(cfg Config) (*Node, error) {
 	if cfg.CPAddr != "" && cfg.ReadMode != shardraft.Linearizable {
 		return nil, errors.New("node: Control Plane integration requires linearizable reads")
 	}
+	if cfg.Replication.TargetRegion != "" && cfg.CPAddr == "" {
+		return nil, errors.New("node: outgoing replication requires Control Plane discovery")
+	}
+	replState, err := replication.NewState(replication.StateOptions{
+		Region: cfg.Region, ShardID: cfg.ShardID, GroupID: cfg.GroupID,
+		Config: cfg.Replication,
+	})
+	if err != nil {
+		return nil, err
+	}
+	cfg.Replication = replState.Config()
+	rc := &cfg.Replication
 	n := &Node{cfg: cfg, log: cfg.Logger.With("node", cfg.NodeID), peerNode: map[uint64]string{}}
 
 	raftPeers := make([]shardraft.Peer, 0, len(cfg.Peers))
@@ -119,7 +135,6 @@ func New(cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("node: peer %d is not %q in the peer list", cfg.PeerID, cfg.NodeID)
 	}
 
-	var err error
 	if n.store, err = store.New(cfg.Store); err != nil {
 		return nil, err
 	}
@@ -128,13 +143,14 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	sm := NewStateMachine(n.store, replState)
 	n.inst, err = shardraft.NewInstance(shardraft.Config{
 		RegionID: cfg.Region, ShardID: cfg.ShardID, GroupID: cfg.GroupID,
 		PeerID: cfg.PeerID, Peers: raftPeers, ReadMode: cfg.ReadMode,
 		TickInterval: cfg.TickInterval, ElectionTicks: cfg.ElectionTicks,
 		RequestTimeout: cfg.RequestTimeout, SnapshotEntries: cfg.SnapshotEntries,
 		Logger: &raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)},
-	}, NewStateMachine(n.store), transport)
+	}, sm, transport)
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +197,24 @@ func New(cfg Config) (*Node, error) {
 	}
 	n.grpcSrv = grpc.NewServer(serverOptions...)
 	pb.RegisterCacheGatewayServer(n.grpcSrv, shardraft.GatewayServer(n.inst))
+	if rc.SourceRegion != "" {
+		rpb.RegisterReplicationServiceServer(n.grpcSrv, &replication.Receiver{Destination: n.inst})
+	}
+	if rc.TargetRegion != "" {
+		n.sender, err = replication.NewSender(
+			n.inst,
+			cfg.Region,
+			rc.TargetRegion,
+			cfg.GroupID,
+			cfg.ShardID,
+			n.replicationAddresses,
+			n.log,
+		)
+		if err != nil {
+			n.shutdown()
+			return nil, err
+		}
+	}
 	return n, nil
 }
 
@@ -271,6 +305,11 @@ func (n *Node) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() { defer wg.Done(); _ = n.agent.Run(ctx) }()
 	}
+	if n.sender != nil {
+		wg.Go(func() {
+			n.sender.Run(ctx)
+		})
+	}
 	n.log.Info("storage node started", "grpc", n.GRPCAddr(), "raft", n.RaftAddr(), "peer_id", n.cfg.PeerID)
 
 	var runErr error
@@ -314,5 +353,39 @@ func (n *Node) shutdown() {
 		if n.cpConn != nil {
 			_ = n.cpConn.Close()
 		}
+		if n.sender != nil {
+			n.sender.Close()
+		}
 	})
+}
+
+// replicationAddresses uses the existing CP agent's last-known-good GetConfig
+// snapshot. STORAGE_NODE views contain placement, not fresh leader observations:
+// try the configured leader first, then the remaining replicas of this shard.
+// This tolerates elections without changing the config revision or CP API.
+func (n *Node) replicationAddresses() []string {
+	c := n.agent.Config()
+	if c == nil || c.MasterRegion() != n.cfg.Region {
+		return nil
+	}
+	target := n.cfg.Replication.TargetRegion
+	r, ok := c.RegionByID(target)
+	if !ok || r.Role != cpconfig.RegionRoleSlave {
+		return nil
+	}
+	a, ok := c.Assignment(target, n.cfg.ShardID)
+	if !ok {
+		return nil
+	}
+	var addresses []string
+	seen := make(map[string]bool)
+	for _, id := range append([]string{a.LeaderNodeID}, a.ReplicaNodeIDs...) {
+		node, ok := c.NodeByID(id)
+		if !ok || node.Region != target || node.Address == "" || node.State == cpconfig.NodeStateDead || node.State == cpconfig.NodeStateDraining || seen[node.Address] {
+			continue
+		}
+		seen[node.Address] = true
+		addresses = append(addresses, node.Address)
+	}
+	return addresses
 }
