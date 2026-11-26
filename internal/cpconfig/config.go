@@ -94,6 +94,32 @@ type Config struct {
 	Regions        []Region              `json:"regions"`
 	Nodes          []Node                `json:"nodes"`
 	Partitions     []PartitionAssignment `json:"partitions"`
+	Memberships    []GroupMembership     `json:"memberships,omitempty"`
+}
+
+// GroupMembership is a leader-reported applied Raft configuration. It never
+// changes the static ReplicaNodeIDs assignment.
+type GroupMembership struct {
+	GroupID     string        `json:"group_id"`
+	Region      string        `json:"region"`
+	PartitionID uint32        `json:"partition_id"`
+	ReporterID  uint64        `json:"reporter_peer_id"`
+	Term        uint64        `json:"term"`
+	Index       uint64        `json:"config_index"`
+	Joint       bool          `json:"joint"`
+	Members     []GroupMember `json:"members"`
+	RemovedIDs  []uint64      `json:"removed_ids,omitempty"`
+	Confirmed   bool          `json:"confirmed,omitempty"`
+}
+
+type GroupMember struct {
+	PeerID        uint64 `json:"peer_id"`
+	NodeID        string `json:"node_id"`
+	Address       string `json:"address"`
+	RaftAddress   string `json:"raft_address"`
+	Voter         bool   `json:"voter"`
+	Learner       bool   `json:"learner"`
+	OutgoingVoter bool   `json:"outgoing_voter"`
 }
 
 // Region — домен отказа и размещения.
@@ -120,6 +146,7 @@ type Node struct {
 type PartitionAssignment struct {
 	PartitionID         uint32   `json:"partition_id"`
 	Region              string   `json:"region"`
+	GroupID             string   `json:"group_id,omitempty"`
 	LeaderNodeID        string   `json:"leader_node_id"`
 	ReplicaNodeIDs      []string `json:"replica_node_ids"`
 	Ready               bool     `json:"ready,omitempty"`
@@ -236,12 +263,12 @@ func (c *Config) Validate() error {
 			}
 			replicas[nodeID] = struct{}{}
 		}
-		if _, ok := replicas[a.LeaderNodeID]; !ok {
+		if _, ok := replicas[a.LeaderNodeID]; !ok && !c.memberVoter(a.Region, a.PartitionID, a.LeaderNodeID) {
 			return fmt.Errorf("%w: leader %q is not a replica in assignment (%s,%d)", ErrInvalidConfig, a.LeaderNodeID, a.Region, a.PartitionID)
 		}
 		leaderReady := false
 		for _, nodeID := range a.ReadyReplicaNodeIDs {
-			if _, ok := replicas[nodeID]; !ok {
+			if _, ok := replicas[nodeID]; !ok && !c.memberVoter(a.Region, a.PartitionID, nodeID) {
 				return fmt.Errorf("%w: ready node %q is not a replica in assignment (%s,%d)", ErrInvalidConfig, nodeID, a.Region, a.PartitionID)
 			}
 			leaderReady = leaderReady || nodeID == a.LeaderNodeID
@@ -262,6 +289,45 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%w: assignment (%s,%d) is writable outside master region", ErrInvalidConfig, a.Region, a.PartitionID)
 		}
 		coverage[a.Region][a.PartitionID] = true
+	}
+	seenGroups := map[assignmentKey]bool{}
+	for _, m := range c.Memberships {
+		if m.GroupID == "" || m.Index == 0 || m.PartitionID >= c.PartitionCount {
+			return fmt.Errorf("%w: invalid observed membership", ErrInvalidConfig)
+		}
+		if _, ok := seen[assignmentKey{m.Region, m.PartitionID}]; !ok {
+			return fmt.Errorf("%w: membership has no assignment", ErrInvalidConfig)
+		}
+		if a, ok := c.Assignment(m.Region, m.PartitionID); ok && a.GroupID != "" && a.GroupID != m.GroupID {
+			return fmt.Errorf("%w: membership group_id does not match assignment", ErrInvalidConfig)
+		}
+		key := assignmentKey{m.Region, m.PartitionID}
+		if seenGroups[key] {
+			return fmt.Errorf("%w: duplicate membership for %s/%d", ErrInvalidConfig, m.Region, m.PartitionID)
+		}
+		seenGroups[key] = true
+		ids, nodeIDs := map[uint64]bool{}, map[string]bool{}
+		outgoingIDs := map[uint64]bool{}
+		reporter := false
+		for _, peer := range m.Members {
+			if peer.PeerID == 0 || peer.NodeID == "" || peer.Address == "" || peer.RaftAddress == "" || ids[peer.PeerID] || nodeIDs[peer.NodeID] || (peer.Voter && peer.Learner) || (!peer.Voter && !peer.Learner && !peer.OutgoingVoter) {
+				return fmt.Errorf("%w: invalid observed member", ErrInvalidConfig)
+			}
+			ids[peer.PeerID] = true
+			nodeIDs[peer.NodeID] = true
+			outgoingIDs[peer.PeerID] = peer.OutgoingVoter
+			reporter = reporter || (peer.PeerID == m.ReporterID && peer.Voter)
+		}
+		if !reporter {
+			return fmt.Errorf("%w: reporter is not a voter", ErrInvalidConfig)
+		}
+		removedIDs := map[uint64]bool{}
+		for _, id := range m.RemovedIDs {
+			if id == 0 || (ids[id] && (!m.Joint || !outgoingIDs[id])) || removedIDs[id] {
+				return fmt.Errorf("%w: invalid removed peer", ErrInvalidConfig)
+			}
+			removedIDs[id] = true
+		}
 	}
 
 	for regionID, parts := range coverage {
@@ -350,6 +416,12 @@ func (c *Config) Clone() *Config {
 		out.Regions[i].GatewayEndpoints = append([]string(nil), c.Regions[i].GatewayEndpoints...)
 	}
 	out.Nodes = append([]Node(nil), c.Nodes...)
+	out.Memberships = make([]GroupMembership, len(c.Memberships))
+	for i := range c.Memberships {
+		out.Memberships[i] = c.Memberships[i]
+		out.Memberships[i].Members = append([]GroupMember(nil), c.Memberships[i].Members...)
+		out.Memberships[i].RemovedIDs = append([]uint64(nil), c.Memberships[i].RemovedIDs...)
+	}
 	out.Partitions = make([]PartitionAssignment, len(c.Partitions))
 	for i := range c.Partitions {
 		out.Partitions[i] = c.Partitions[i]
@@ -357,4 +429,17 @@ func (c *Config) Clone() *Config {
 		out.Partitions[i].ReadyReplicaNodeIDs = append([]string(nil), c.Partitions[i].ReadyReplicaNodeIDs...)
 	}
 	return &out
+}
+
+func (c *Config) memberVoter(region string, partition uint32, nodeID string) bool {
+	for _, m := range c.Memberships {
+		if m.Region == region && m.PartitionID == partition {
+			for _, peer := range m.Members {
+				if peer.NodeID == nodeID && peer.Voter {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

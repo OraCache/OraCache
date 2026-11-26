@@ -53,6 +53,7 @@ func FromProto(p *controlplanev1.ClusterConfig) (*Config, error) {
 		cfg.Partitions = append(cfg.Partitions, PartitionAssignment{
 			PartitionID:         a.GetPartitionId(),
 			Region:              a.GetRegion(),
+			GroupID:             a.GetGroupId(),
 			LeaderNodeID:        a.GetLeaderNodeId(),
 			ReplicaNodeIDs:      append([]string(nil), a.GetReplicaNodeIds()...),
 			Ready:               a.GetReady(),
@@ -62,6 +63,19 @@ func FromProto(p *controlplanev1.ClusterConfig) (*Config, error) {
 			ReadyReplicaNodeIDs: append([]string(nil), a.GetReadyReplicaNodeIds()...),
 			LeaderConflict:      a.GetLeaderConflict(),
 		})
+	}
+	for _, m := range p.GetMemberships() {
+		if m == nil {
+			return nil, fmt.Errorf("%w: nil membership", ErrInvalidConfig)
+		}
+		item := GroupMembership{GroupID: m.GetGroupId(), Region: m.GetRegion(), PartitionID: m.GetPartitionId(), ReporterID: m.GetReporterPeerId(), Term: m.GetTerm(), Index: m.GetConfigIndex(), Joint: m.GetJoint(), RemovedIDs: append([]uint64(nil), m.GetRemovedIds()...), Confirmed: m.GetConfirmed()}
+		for _, peer := range m.GetMembers() {
+			if peer == nil {
+				return nil, fmt.Errorf("%w: nil member", ErrInvalidConfig)
+			}
+			item.Members = append(item.Members, GroupMember{PeerID: peer.GetPeerId(), NodeID: peer.GetNodeId(), Address: peer.GetAddress(), RaftAddress: peer.GetRaftAddress(), Voter: peer.GetVoter(), Learner: peer.GetLearner(), OutgoingVoter: peer.GetOutgoingVoter()})
+		}
+		cfg.Memberships = append(cfg.Memberships, item)
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -106,6 +120,7 @@ func (c *Config) ToProto() *controlplanev1.ClusterConfig {
 		out.Partitions = append(out.Partitions, &controlplanev1.PartitionAssignment{
 			PartitionId:         a.PartitionID,
 			Region:              a.Region,
+			GroupId:             a.GroupID,
 			LeaderNodeId:        a.LeaderNodeID,
 			ReplicaNodeIds:      append([]string(nil), a.ReplicaNodeIDs...),
 			Ready:               a.Ready,
@@ -115,6 +130,13 @@ func (c *Config) ToProto() *controlplanev1.ClusterConfig {
 			ReadyReplicaNodeIds: append([]string(nil), a.ReadyReplicaNodeIDs...),
 			LeaderConflict:      a.LeaderConflict,
 		})
+	}
+	for _, m := range c.Memberships {
+		item := &controlplanev1.GroupMembership{GroupId: m.GroupID, Region: m.Region, PartitionId: m.PartitionID, ReporterPeerId: m.ReporterID, Term: m.Term, ConfigIndex: m.Index, Joint: m.Joint, RemovedIds: append([]uint64(nil), m.RemovedIDs...), Confirmed: m.Confirmed}
+		for _, peer := range m.Members {
+			item.Members = append(item.Members, &controlplanev1.GroupMember{PeerId: peer.PeerID, NodeId: peer.NodeID, Address: peer.Address, RaftAddress: peer.RaftAddress, Voter: peer.Voter, Learner: peer.Learner, OutgoingVoter: peer.OutgoingVoter})
+		}
+		out.Memberships = append(out.Memberships, item)
 	}
 	return out
 }
