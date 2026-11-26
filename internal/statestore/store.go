@@ -18,6 +18,7 @@ import (
 // ErrInvalidHeartbeat возвращается для некорректных heartbeat. CP API
 // отображает его в gRPC InvalidArgument.
 var ErrInvalidHeartbeat = errors.New("oracache/statestore: invalid heartbeat")
+var ErrMembershipConflict = errors.New("oracache/statestore: conflicting raft membership")
 
 // RaftRole — локальная роль partition-группы. Она никогда не является глобальной
 // ролью для всех регионов.
@@ -56,6 +57,7 @@ type PartitionStatus struct {
 	LeaderID     string
 	Ready        bool
 	LastError    string
+	Membership   *cpconfig.GroupMembership
 }
 
 // Resources — последний полученный snapshot ёмкости ноды.
@@ -80,6 +82,13 @@ type Heartbeat struct {
 	Resources      Resources
 }
 
+// HeartbeatReceipt records when CP received the last heartbeat for a node in a region.
+type HeartbeatReceipt struct {
+	NodeID     string
+	Region     string
+	ReceivedAt time.Time
+}
+
 // Snapshot — неизменяемая revision конфигурации и её тело. Config равен nil,
 // только когда в store ещё нет конфигурации (revision 0).
 type Snapshot struct {
@@ -101,6 +110,10 @@ type Store interface {
 	// Heartbeat возвращает последний heartbeat ноды.
 	Heartbeat(ctx context.Context, nodeID string) (Heartbeat, bool, error)
 
+	// HeartbeatReceipts returns receipts recorded while each node-region pair was
+	// continuously configured, including receipts older than the liveness TTL.
+	HeartbeatReceipts(ctx context.Context) ([]HeartbeatReceipt, error)
+
 	// Config возвращает текущий неизменяемый snapshot. Возвращённый Config —
 	// независимая копия; вызывающий код не должен менять через него состояние store.
 	Config(ctx context.Context) (Snapshot, error)
@@ -117,6 +130,14 @@ type Store interface {
 // CloneHeartbeat возвращает глубокую копию для передачи между goroutine.
 func CloneHeartbeat(h Heartbeat) Heartbeat {
 	h.Partitions = append([]PartitionStatus(nil), h.Partitions...)
+	for i := range h.Partitions {
+		if m := h.Partitions[i].Membership; m != nil {
+			copyOf := *m
+			copyOf.Members = append([]cpconfig.GroupMember(nil), m.Members...)
+			copyOf.RemovedIDs = append([]uint64(nil), m.RemovedIDs...)
+			h.Partitions[i].Membership = &copyOf
+		}
+	}
 	return h
 }
 

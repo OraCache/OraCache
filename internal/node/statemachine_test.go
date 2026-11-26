@@ -12,6 +12,7 @@ import (
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/node"
+	"github.com/OraCache/oracache/internal/replication"
 	"github.com/OraCache/oracache/internal/store"
 	"github.com/OraCache/oracache/shardraft"
 	"go.etcd.io/raft/v3"
@@ -42,7 +43,7 @@ func newSM(t *testing.T) (*node.StateMachine, *store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return node.NewStateMachine(s), s
+	return node.NewStateMachine(s, &replication.State{}), s
 }
 
 func TestStateMachineMapsStoreResults(t *testing.T) {

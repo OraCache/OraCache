@@ -8,7 +8,7 @@
     {"id": "node-3", "region": "region-a", "address": "node-3:28091"}
   ],
   "partitions": [
-    {"partition_id": 0, "region": "region-a", "leader_node_id": "node-1",
+    {"partition_id": 0, "region": "region-a", "group_id": "region-a/shard-0/poc-1", "leader_node_id": "node-1",
       "replica_node_ids": ["node-1", "node-2", "node-3"]}
   ]
 }

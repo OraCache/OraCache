@@ -1,0 +1,20 @@
+{
+  "revision": 1,
+  "partition_count": 1,
+  "regions": [
+    {"id": "region-a", "role": "master"},
+    {"id": "region-b", "role": "slave"}
+  ],
+  "nodes": [
+    {"id": "a-1", "region": "region-a", "address": "a-1:28091"},
+    {"id": "a-2", "region": "region-a", "address": "a-2:28091"},
+    {"id": "a-3", "region": "region-a", "address": "a-3:28091"},
+    {"id": "b-1", "region": "region-b", "address": "b-1:28091"},
+    {"id": "b-2", "region": "region-b", "address": "b-2:28091"},
+    {"id": "b-3", "region": "region-b", "address": "b-3:28091"}
+  ],
+  "partitions": [
+    {"partition_id": 0, "region": "region-a", "leader_node_id": "a-1", "replica_node_ids": ["a-1", "a-2", "a-3"]},
+    {"partition_id": 0, "region": "region-b", "leader_node_id": "b-1", "replica_node_ids": ["b-1", "b-2", "b-3"]}
+  ]
+}

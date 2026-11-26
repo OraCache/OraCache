@@ -40,6 +40,17 @@ type snapshot struct {
 	masterRegion   string
 	local          map[uint32]partitionRoute
 	write          map[uint32]partitionRoute
+	admin          map[adminKey]adminRoute
+}
+
+type adminKey struct {
+	group     string
+	region    string
+	partition uint32
+}
+
+type adminRoute struct {
+	addresses []string
 }
 
 type partitionRoute struct {
@@ -152,6 +163,7 @@ func buildSnapshotMode(localRegion string, cfg *cpconfig.Config, live bool) (*sn
 		masterRegion:   masterRegion,
 		local:          make(map[uint32]partitionRoute, cfg.PartitionCount),
 		write:          make(map[uint32]partitionRoute, cfg.PartitionCount),
+		admin:          make(map[adminKey]adminRoute),
 	}
 	for _, assignment := range cfg.Partitions {
 		if assignment.Region != localRegion && assignment.Region != masterRegion {
@@ -168,7 +180,44 @@ func buildSnapshotMode(localRegion string, cfg *cpconfig.Config, live bool) (*sn
 			s.write[assignment.PartitionID] = route.forOperation(live && assignment.Ready && !assignment.Writable)
 		}
 	}
+	for _, m := range cfg.Memberships {
+		route := adminRoute{}
+		var leaderAddress string
+		for _, a := range cfg.Partitions {
+			if a.Region == m.Region && a.PartitionID == m.PartitionID {
+				for _, peer := range m.Members {
+					if peer.NodeID == a.LeaderNodeID && (peer.Voter || peer.OutgoingVoter) {
+						leaderAddress = peer.Address
+						break
+					}
+				}
+				break
+			}
+		}
+		if leaderAddress != "" {
+			route.addresses = append(route.addresses, leaderAddress)
+		}
+		for _, peer := range m.Members {
+			if (peer.Voter || peer.OutgoingVoter) && peer.Address != leaderAddress {
+				route.addresses = append(route.addresses, peer.Address)
+			}
+		}
+		s.admin[adminKey{m.GroupID, m.Region, m.PartitionID}] = route
+	}
 	return s, nil
+}
+
+// AdminCandidates returns only voter addresses from the observed Raft group.
+func (r *Router) AdminCandidates(groupID, region string, partition uint32) ([]string, error) {
+	s := r.cur.Load()
+	if s == nil {
+		return nil, ErrNoConfig
+	}
+	admin, ok := s.admin[adminKey{groupID, region, partition}]
+	if !ok {
+		return nil, ErrNoLeader
+	}
+	return append([]string(nil), admin.addresses...), nil
 }
 
 func (route partitionRoute) forOperation(disabled bool) partitionRoute {

@@ -79,15 +79,16 @@ generate: $(PROTOC_ARCHIVE)
 	PATH="$(CURDIR)/.tools/bin:$$PATH" .tools/protoc/bin/protoc -I proto -I .tools/protoc/include \
 		--go_out=. --go_opt=module=github.com/OraCache/oracache \
 		--go-grpc_out=. --go-grpc_opt=module=github.com/OraCache/oracache \
-		proto/cache/gateway.proto proto/controlplane/v1/controlplane.proto
+		proto/cache/gateway.proto proto/cache/membership.proto proto/controlplane/v1/controlplane.proto proto/replication/v1/replication.proto
 
 test-e2e:
 	mkdir -p $(REPORTS)
-	rm -f $(REPORTS)/e2e.xml $(REPORTS)/e2e-cp.xml
+	rm -f $(REPORTS)/e2e.xml $(REPORTS)/e2e-cp.xml $(REPORTS)/e2e-replication.xml
 	$(MAKE) $(GOTESTSUM)
 	# Separate Go invocations keep the Compose projects in separate Ryuk sessions.
-	cd integration/e2e && GOWORK=off $(GOTESTSUM) --format testname --junitfile $(REPORTS)/e2e.xml -- -tags=e2e -count=1 -timeout=10m -skip '^TestControlPlaneGatewayFailover$$' ./...
+	cd integration/e2e && GOWORK=off $(GOTESTSUM) --format testname --junitfile $(REPORTS)/e2e.xml -- -tags=e2e -count=1 -timeout=10m -skip '^(TestControlPlaneGatewayFailover|TestRegionReplication)' ./...
 	cd integration/e2e && GOWORK=off $(GOTESTSUM) --format testname --junitfile $(REPORTS)/e2e-cp.xml -- -tags=e2e -count=1 -timeout=10m -run '^TestControlPlaneGatewayFailover$$' .
+	cd integration/e2e && GOWORK=off $(GOTESTSUM) --format testname --junitfile $(REPORTS)/e2e-replication.xml -- -tags=e2e -count=1 -timeout=10m -run '^TestRegionReplication' .
 
 docker-build:
 	docker compose build gateway

@@ -29,6 +29,9 @@ func NewMemoryNetwork() *MemoryNetwork {
 	return &MemoryNetwork{nodes: make(map[endpoint]*Instance), blocked: make(map[link]bool)}
 }
 
+func (m *MemoryNetwork) ValidatePeer(Peer) error { return nil }
+func (m *MemoryNetwork) SetPeer(Peer) error      { return nil }
+
 // Register is called before Run. Reusing a registered identity is rejected,
 // including after Close: empty-state peer restarts are outside this PoC.
 func (m *MemoryNetwork) Register(n *Instance) error {

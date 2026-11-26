@@ -55,6 +55,32 @@ message PartitionStatus {
   string leader_id = 6;
   bool ready = 7;
   string last_error = 8;
+  // Only the current leader publishes an applied, complete configuration.
+  GroupMembership membership = 9;
+}
+
+message GroupMember {
+  uint64 peer_id = 1;
+  string node_id = 2;
+  string address = 3;
+  string raft_address = 4;
+  bool voter = 5;
+  bool learner = 6;
+  bool outgoing_voter = 7;
+}
+
+message GroupMembership {
+  string group_id = 1;
+  string region = 2;
+  uint32 partition_id = 3;
+  uint64 reporter_peer_id = 4;
+  uint64 config_index = 5;
+  bool joint = 6;
+  repeated GroupMember members = 7;
+  repeated uint64 removed_ids = 8;
+  // Live-view only: a fresh heartbeat from the observed leader confirmed it.
+  bool confirmed = 9;
+  uint64 term = 10;
 }
 
 enum RaftRole {
@@ -99,6 +125,8 @@ message ClusterConfig {
   repeated Node nodes = 4;
   // Уникальны по (region, partition_id).
   repeated PartitionAssignment partitions = 5;
+  // Applied Raft membership, separate from static partition assignments.
+  repeated GroupMembership memberships = 6;
 }
 
 message Region {
@@ -138,4 +166,6 @@ message PartitionAssignment {
   repeated string ready_replica_node_ids = 9;
   // Две готовые реплики заявили лидерство в observed_term.
   bool leader_conflict = 10;
+  // Optional bootstrap incarnation binding; never inferred from membership.
+  string group_id = 11;
 }

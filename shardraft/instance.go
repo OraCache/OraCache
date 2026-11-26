@@ -3,6 +3,7 @@ package shardraft
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sync"
@@ -17,19 +18,23 @@ import (
 )
 
 type result struct {
-	message proto.Message
-	err     error
+	message    proto.Message
+	membership *MembershipResult
+	err        error
 }
 type request struct {
-	ctx   context.Context
-	op    operation
-	data  []byte
-	reply chan result
+	ctx    context.Context
+	op     operation
+	data   []byte
+	reply  chan result
+	change *MembershipChange
 }
 type pendingRequest struct {
 	request
-	readIndex uint64
-	readReady bool
+	readIndex     uint64
+	readReady     bool
+	readStarted   time.Time
+	adminVerified bool
 }
 type outgoing struct {
 	data     []byte
@@ -41,34 +46,50 @@ type delivery struct {
 	err      error
 }
 
+type heartbeatSnapshot struct {
+	status     Status
+	membership Membership
+}
+
 // Instance owns one peer and one cache. All Raft and cache calls are serialized
 // by Run. An Instance is single-use: restarting without term/vote is unsafe.
 type Instance struct {
-	cfg        Config
-	cache      StateMachine
-	transport  Transport
-	raw        *raft.RawNode
-	storage    *raft.MemoryStorage
-	peers      map[uint64]Peer
-	requests   chan request
-	incoming   chan raftpb.Message
-	deliveries chan delivery
-	outbound   map[uint64]chan outgoing
-	stop       chan struct{}
-	done       chan struct{}
-	mu         sync.Mutex
-	lifecycle  int // 0 constructed, 1 running, 2 stopped
-	stopOnce   sync.Once
-	observed   atomic.Value
+	cfg              Config
+	cache            StateMachine
+	transport        Transport
+	raw              *raft.RawNode
+	storage          *raft.MemoryStorage
+	peers            map[uint64]Peer
+	requests         chan request
+	incoming         chan raftpb.Message
+	deliveries       chan delivery
+	outbound         map[uint64]chan outgoing
+	stop             chan struct{}
+	done             chan struct{}
+	mu               sync.Mutex
+	lifecycle        int // 0 constructed, 1 running, 2 stopped
+	stopOnce         sync.Once
+	observed         atomic.Pointer[Status]
+	heartbeat        atomic.Pointer[heartbeatSnapshot]
+	membershipEvents chan struct{}
+	known            atomic.Value // immutable map used by concurrent Step calls
 	// Fields below belong exclusively to Run.
 	pending       map[requestID]*pendingRequest
 	sequence      uint64
 	applied       uint64
 	snapshotIndex uint64
+	lastIndex     uint64
 	conf          raftpb.ConfState
+	configIndex   uint64
+	removed       map[uint64]bool
+	operations    map[string]membershipRecord
+	proposing     *MembershipChange
+	proposalTerm  uint64
+	workerCtx     context.Context
+	workers       sync.WaitGroup
 }
 
-// NewInstance validates and bootstraps an empty, static group in memory.
+// NewInstance bootstraps a group, or prepares an empty joining member.
 // Every initial peer must receive the same group identity and peer list.
 // The cache must be empty. No goroutines or network listeners are started here.
 func NewInstance(cfg Config, cache StateMachine, transport Transport) (*Instance, error) {
@@ -97,34 +118,90 @@ func NewInstance(cfg Config, cache StateMachine, transport Transport) (*Instance
 		incoming: make(chan raftpb.Message, 64), deliveries: make(chan delivery, 64),
 		outbound: make(map[uint64]chan outgoing), stop: make(chan struct{}), done: make(chan struct{}),
 		pending: make(map[requestID]*pendingRequest),
+		removed: make(map[uint64]bool), operations: make(map[string]membershipRecord),
+		membershipEvents: make(chan struct{}, 1),
 	}
 	initial := make([]raft.Peer, 0, len(cfg.Peers))
 	for _, p := range cfg.Peers {
+		if resolver, ok := transport.(interface{ PeerAddress(uint64) string }); ok && p.RaftAddress == "" {
+			p.RaftAddress = resolver.PeerAddress(p.ID)
+		}
+		if validator, ok := transport.(MembershipTransport); ok {
+			if err := validator.ValidatePeer(p); err != nil {
+				return nil, err
+			}
+		}
 		n.peers[p.ID] = p
-		initial = append(initial, raft.Peer{ID: p.ID})
+		data, _ := json.Marshal(p)
+		if len(data) > 4096 {
+			return nil, fmt.Errorf("resolved peer metadata exceeds 4096 bytes")
+		}
+		initial = append(initial, raft.Peer{ID: p.ID, Context: data})
 		if p.ID != cfg.PeerID {
 			n.outbound[p.ID] = make(chan outgoing, 8)
 		}
 	}
-	if err := raw.Bootstrap(initial); err != nil {
-		return nil, err
+	if !cfg.Join {
+		if err := raw.Bootstrap(initial); err != nil {
+			return nil, err
+		}
 	}
+	n.publishKnown()
 	n.publish(false, "")
 	return n, nil
 }
 
-func (n *Instance) Status() Status { return n.observed.Load().(Status) }
+// Status returns the latest diagnostic snapshot, including in-progress apply.
+func (n *Instance) Status() Status { return *n.observed.Load() }
 
-func (n *Instance) publish(running bool, lastError string) {
+// HeartbeatStatus returns the snapshot from the end of a Raft owner iteration.
+// It preserves the readiness observation used by Control Plane routing.
+func (n *Instance) HeartbeatStatus() Status { return n.heartbeat.Load().status }
+
+// HeartbeatState returns the status and membership from the same owner iteration.
+func (n *Instance) HeartbeatState() (Status, Membership) {
+	snapshot := n.heartbeat.Load()
+	return snapshot.status, snapshot.membership.clone()
+}
+
+func (n *Instance) snapshot(running bool, lastError string) *Status {
 	s := n.raw.BasicStatus()
-	n.observed.Store(Status{
+	return &Status{
 		RegionID: n.cfg.RegionID, ShardID: n.cfg.ShardID, GroupID: n.cfg.GroupID, PeerID: n.cfg.PeerID,
 		Role: s.RaftState.String(), Term: s.Term, LeaderID: s.Lead,
-		CommitIndex: s.Commit, AppliedIndex: n.applied, SnapshotIndex: n.snapshotIndex,
-		Ready:   running && s.Lead != 0 && n.applied >= s.Commit,
+		CommitIndex: s.Commit, AppliedIndex: n.applied, SnapshotIndex: n.snapshotIndex, LastIndex: n.lastIndex,
+		IsLearner: n.isLearner(n.cfg.PeerID), Member: n.isVoter(n.cfg.PeerID),
+		Ready:   running && n.canServe() && s.Lead != 0 && n.applied >= s.Commit,
 		Running: running, LastError: lastError,
-	})
+	}
 }
+
+func (n *Instance) publish(running bool, lastError string) {
+	next := &heartbeatSnapshot{status: *n.snapshot(running, lastError)}
+	previous := n.heartbeat.Load()
+	if previous != nil {
+		next.membership = previous.membership
+	}
+	// Reuse membership between configuration or leadership changes.
+	m := next.membership
+	changed := previous == nil || m.Index != n.configIndex || m.Term != next.status.Term || m.LeaderID != next.status.LeaderID
+	if changed {
+		next.membership = n.membershipView()
+	}
+	n.heartbeat.Store(next)
+	n.observed.Store(&next.status)
+	if changed && next.status.Role == raft.StateLeader.String() && n.configIndex != 0 &&
+		(previous == nil || m.Index != n.configIndex || m.LeaderID != n.cfg.PeerID) {
+		select {
+		case n.membershipEvents <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// MembershipEvents signals an applied configuration or a newly elected leader.
+// The receiver reads Membership for the latest complete snapshot.
+func (n *Instance) MembershipEvents() <-chan struct{} { return n.membershipEvents }
 
 // Run blocks until ctx is cancelled, Close is called or a fatal apply error occurs.
 // It must be called once. All send workers are joined before Run returns.
@@ -137,13 +214,9 @@ func (n *Instance) Run(ctx context.Context) (runErr error) {
 	n.lifecycle = 1
 	n.mu.Unlock()
 	workerCtx, cancel := context.WithCancel(ctx)
-	var workers sync.WaitGroup
+	n.workerCtx = workerCtx
 	for peer, queue := range n.outbound {
-		workers.Add(1)
-		go func(peer uint64, queue <-chan outgoing) {
-			defer workers.Done()
-			n.sendLoop(workerCtx, peer, queue)
-		}(peer, queue)
+		n.startSender(peer, queue)
 	}
 	defer func() {
 		message := ""
@@ -152,7 +225,7 @@ func (n *Instance) Run(ctx context.Context) (runErr error) {
 		}
 		n.publish(false, message)
 		cancel()
-		workers.Wait()
+		n.workers.Wait()
 		for id, p := range n.pending {
 			p.reply <- result{err: unavailable("instance stopped; proposed writes may have committed")}
 			delete(n.pending, id)
@@ -181,6 +254,9 @@ func (n *Instance) Run(ctx context.Context) (runErr error) {
 		case m := <-n.incoming:
 			// Membership and local-message checks happen in Step. A stale network
 			// message rejected by the protocol does not fail the instance.
+			if !n.known.Load().(map[uint64]bool)[m.From] {
+				continue
+			}
 			if err := n.raw.Step(m); err != nil && err != raft.ErrStepPeerNotFound && err != raft.ErrProposalDropped {
 				return err
 			}
@@ -227,7 +303,7 @@ func (n *Instance) Step(ctx context.Context, group string, data []byte) error {
 	if err := m.Unmarshal(data); err != nil {
 		return status.Error(codes.InvalidArgument, "invalid Raft message")
 	}
-	_, known := n.peers[m.From]
+	known := n.known.Load().(map[uint64]bool)[m.From]
 	if !known || m.From == n.cfg.PeerID || m.To != n.cfg.PeerID || raft.IsLocalMsg(m.Type) || m.Type == raftpb.MsgProp || m.Type == raftpb.MsgReadIndex {
 		return status.Error(codes.InvalidArgument, "invalid Raft message source, target or type")
 	}
@@ -255,6 +331,9 @@ func (n *Instance) sendLoop(ctx context.Context, peer uint64, queue <-chan outgo
 			attempt, cancel := context.WithTimeout(ctx, n.cfg.SendTimeout)
 			err := n.transport.Send(attempt, n.cfg.GroupID, peer, m.data)
 			cancel()
+			if err != nil && ctx.Err() == nil && n.cfg.Observer != nil {
+				n.cfg.Observer.RecordSendError()
+			}
 			select {
 			case n.deliveries <- delivery{to: peer, snapshot: m.snapshot, err: err}:
 			case <-ctx.Done():
@@ -274,8 +353,12 @@ func (n *Instance) accept(r request) {
 		return
 	}
 	s := n.raw.BasicStatus()
-	read := r.op == opGet || r.op == opBatchGet
-	if read && n.cfg.ReadMode == Local {
+	if !n.canServe() {
+		r.reply <- result{err: unavailable("member is joining, a learner, or removed")}
+		return
+	}
+	read := r.op == opGet || r.op == opBatchGet || r.op == opReadOutbox
+	if read && r.op != opReadOutbox && n.cfg.ReadMode == Local {
 		if s.Lead == 0 || n.applied < s.Commit {
 			r.reply <- result{err: unavailable("replica is not ready")}
 			return
@@ -302,7 +385,8 @@ func (n *Instance) accept(r request) {
 	binary.BigEndian.PutUint64(id[:8], n.cfg.PeerID)
 	binary.BigEndian.PutUint64(id[8:], n.sequence)
 	n.pending[id] = &pendingRequest{request: r}
-	if read {
+	if read || r.change != nil {
+		n.pending[id].readStarted = time.Now()
 		n.raw.ReadIndex(id[:])
 	} else if err := n.raw.Propose(encodeCommand(r.op, id, r.data)); err != nil {
 		delete(n.pending, id)
@@ -321,7 +405,14 @@ func (n *Instance) expireRequests() {
 
 func (n *Instance) completeReads() {
 	for id, p := range n.pending {
+		if p.change != nil && n.completeMembership(id, p) {
+			continue
+		}
 		if !p.readReady || p.readIndex > n.applied {
+			continue
+		}
+		if p.change != nil {
+			n.proposeMembership(id, p)
 			continue
 		}
 		message, err := decodeRequest(p.op, p.data)
@@ -334,26 +425,47 @@ func (n *Instance) completeReads() {
 	}
 }
 
+func (n *Instance) observe(stage TimingStage, start time.Time) {
+	if n.cfg.Observer != nil {
+		n.cfg.Observer.ObserveDuration(stage, time.Since(start))
+	}
+}
+
 func (n *Instance) processReady() error {
 	for n.raw.HasReady() {
 		rd := n.raw.Ready()
+		var readStateAt time.Time
+		if len(rd.ReadStates) > 0 {
+			readStateAt = time.Now()
+		}
 		if !raft.IsEmptySnap(rd.Snapshot) {
-			if err := n.cache.Restore(rd.Snapshot.Data); err != nil {
+			n.observed.Store(n.snapshot(true, ""))
+			started := time.Now()
+			err := n.restoreSnapshot(rd.Snapshot.Data)
+			n.observe(StageRestore, started)
+			if err != nil {
 				return fmt.Errorf("restore checkpoint: %w", err)
 			}
 			if err := n.storage.ApplySnapshot(rd.Snapshot); err != nil {
 				return err
 			}
-			n.applied, n.snapshotIndex = rd.Snapshot.Metadata.Index, rd.Snapshot.Metadata.Index
+			n.applied, n.snapshotIndex, n.lastIndex = rd.Snapshot.Metadata.Index, rd.Snapshot.Metadata.Index, rd.Snapshot.Metadata.Index
 			n.conf = rd.Snapshot.Metadata.ConfState
+			n.publishKnown()
 		}
 		if err := n.storage.Append(rd.Entries); err != nil {
 			return err
+		}
+		if len(rd.Entries) > 0 {
+			n.lastIndex = rd.Entries[len(rd.Entries)-1].Index
 		}
 		if !raft.IsEmptyHardState(rd.HardState) {
 			if err := n.storage.SetHardState(rd.HardState); err != nil {
 				return err
 			}
+		}
+		if len(rd.CommittedEntries) > 0 {
+			n.observed.Store(n.snapshot(true, ""))
 		}
 		// Marshal before handing data to workers; RawNode messages must not be
 		// marshalled concurrently with subsequent Ready/Advance calls.
@@ -364,7 +476,9 @@ func (n *Instance) processReady() error {
 			}
 			queue, ok := n.outbound[m.To]
 			if !ok {
-				return fmt.Errorf("Raft addressed unknown peer %d", m.To)
+				// A joining member may not yet have applied the address record.
+				n.raw.ReportUnreachable(m.To)
+				continue
 			}
 			select {
 			case queue <- outgoing{data: data, snapshot: m.Type == raftpb.MsgSnap}:
@@ -389,6 +503,21 @@ func (n *Instance) processReady() error {
 					return err
 				}
 				n.conf = *n.raw.ApplyConfChange(cc)
+				if len(cc.Context) != 0 {
+					var peer Peer
+					if err := json.Unmarshal(cc.Context, &peer); err != nil {
+						return err
+					}
+					if err := n.installPeer(peer); err != nil {
+						return err
+					}
+				}
+				n.configIndex = entry.Index
+				n.publishKnown()
+			case raftpb.EntryConfChangeV2:
+				if err := n.applyMembership(entry); err != nil {
+					return err
+				}
 			case raftpb.EntryNormal:
 				if len(entry.Data) > 0 {
 					op, id, payload, err := decodeCommand(entry.Data)
@@ -399,7 +528,9 @@ func (n *Instance) processReady() error {
 					if err != nil {
 						return fmt.Errorf("decode committed request: %w", err)
 					}
+					started := time.Now()
 					response, err := n.execute(message)
+					n.observe(StageApply, started)
 					if !expectedApplicationError(err) {
 						return fmt.Errorf("apply entry %d: %w", entry.Index, err)
 					}
@@ -420,12 +551,20 @@ func (n *Instance) processReady() error {
 			var id requestID
 			copy(id[:], state.RequestCtx)
 			if p := n.pending[id]; p != nil {
+				if !p.readReady && n.cfg.Observer != nil {
+					n.cfg.Observer.ObserveDuration(StageReadIndex, readStateAt.Sub(p.readStarted))
+				}
 				p.readReady, p.readIndex = true, state.Index
 			}
 		}
 		n.raw.Advance(rd)
-		if n.applied-n.snapshotIndex >= n.cfg.SnapshotEntries {
-			data, err := n.cache.Checkpoint()
+		// A new member rejects a snapshot whose ConfState does not include it.
+		// Once compaction has happened, refresh the snapshot on every membership
+		// change instead of waiting for another SnapshotEntries writes.
+		if n.applied-n.snapshotIndex >= n.cfg.SnapshotEntries || (n.snapshotIndex > 0 && n.configIndex > n.snapshotIndex) {
+			started := time.Now()
+			data, err := n.makeSnapshot()
+			n.observe(StageCheckpoint, started)
 			if err != nil {
 				return fmt.Errorf("checkpoint: %w", err)
 			}
