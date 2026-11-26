@@ -1,9 +1,10 @@
-// Package shardraft runs one in-memory replica of a static Raft group.
+// Package shardraft runs one in-memory replica of a Raft group.
 // An Instance becomes leader or follower through elections, not configuration.
 package shardraft
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -23,10 +24,12 @@ const (
 )
 
 type Peer struct {
-	ID uint64
+	ID uint64 `json:"id"`
 	// Address is an optional client RPC address used in NotLeader hints.
-	// Raft transport addresses belong to the transport configuration.
-	Address string
+	Address string `json:"address"`
+	// NodeID is the application's identity; RaftAddress is the transport URL.
+	NodeID      string `json:"node_id"`
+	RaftAddress string `json:"raft_address"`
 }
 
 // TimingStage identifies an observed operation inside the Raft instance.
@@ -50,9 +53,12 @@ type Config struct {
 	RegionID string
 	ShardID  uint32
 	// GroupID must uniquely identify this incarnation of the group.
-	GroupID         string
-	PeerID          uint64
-	Peers           []Peer
+	GroupID string
+	PeerID  uint64
+	Peers   []Peer
+	// Join starts empty without Bootstrap. Peers are seed addresses, not voters.
+	// The local identity must be new; an existing leader must add it as a learner.
+	Join            bool
 	ReadMode        ReadMode
 	TickInterval    time.Duration
 	ElectionTicks   int
@@ -76,9 +82,16 @@ func (c Config) normalized() (Config, error) {
 		return c, fmt.Errorf("unknown read mode %d", c.ReadMode)
 	}
 	seen := make(map[uint64]bool)
+	if len(c.Peers) > maxKnownPeers {
+		return c, fmt.Errorf("too many initial peers")
+	}
 	c.Peers = append([]Peer(nil), c.Peers...)
 	sort.Slice(c.Peers, func(i, j int) bool { return c.Peers[i].ID < c.Peers[j].ID })
 	for _, p := range c.Peers {
+		data, _ := json.Marshal(p)
+		if len(data) > 4096 {
+			return c, fmt.Errorf("peer metadata exceeds 4096 bytes")
+		}
 		if p.ID == 0 || raft.IsLocalMsgTarget(p.ID) || seen[p.ID] {
 			return c, fmt.Errorf("peer IDs must be nonzero, unique and not reserved by Raft")
 		}
@@ -162,6 +175,16 @@ type Transport interface {
 	Send(ctx context.Context, group string, to uint64, data []byte) error
 }
 
+// MembershipTransport supports addresses learned through committed changes.
+// ValidatePeer must be side-effect free; SetPeer must be safe with concurrent
+// Send calls and must not perform blocking network IO. MemoryNetwork has no
+// address registry to update, but implements these methods for uniformity.
+type MembershipTransport interface {
+	Transport
+	ValidatePeer(Peer) error
+	SetPeer(Peer) error
+}
+
 type Status struct {
 	RegionID      string
 	ShardID       uint32
@@ -174,6 +197,8 @@ type Status struct {
 	AppliedIndex  uint64
 	SnapshotIndex uint64
 	LastIndex     uint64
+	IsLearner     bool
+	Member        bool
 	// Ready means initialized and applied through a known committed position.
 	// It is not a promise of freshness or current quorum availability.
 	Ready     bool
