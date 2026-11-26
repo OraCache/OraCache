@@ -1,0 +1,66 @@
+name: oracache-cp-monitoring
+
+x-poc: &poc
+  image: oracache-cp-poc:local
+  pull_policy: never
+
+x-node: &node
+  <<: *poc
+  entrypoint:
+    - /oracache-node
+    - -cp-addr=cp-api:50052
+    - -region=eu
+    - -partitions=all
+    - -heartbeat-interval=1s
+    - -status-listen=none
+  depends_on:
+    - cp-api
+
+services:
+  cp-api:
+    <<: *poc
+    build:
+      context: .
+      dockerfile: Dockerfile.cp-poc
+    entrypoint: ["/cp-api"]
+    command: ["-dev-cluster", "-listen=:50052", "-metrics-listen=:9464", "-node-ttl=15s"]
+
+  eu-1:
+    <<: *node
+    command: ["-node-id=eu-1", "-leader-partitions=even"]
+
+  eu-2:
+    <<: *node
+    command: ["-node-id=eu-2", "-leader-partitions=odd"]
+
+  api-gateway:
+    <<: *poc
+    entrypoint: ["/api-gateway"]
+    command:
+      - -cp-addr=cp-api:50052
+      - -region=eu
+      - -node-id=gw-eu-1
+      - -poll-interval=2s
+      - -status-listen=:9466
+    depends_on:
+      - cp-api
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports:
+      - "127.0.0.1:${ORACACHE_PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./configs/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports:
+      - "127.0.0.1:${ORACACHE_GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./configs/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./configs/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus

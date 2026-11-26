@@ -152,7 +152,10 @@ func validateMembershipChange(c MembershipChange) error {
 }
 
 func (n *Instance) Membership() Membership {
-	m := n.membership.Load().(Membership)
+	return n.heartbeat.Load().membership.clone()
+}
+
+func (m Membership) clone() Membership {
 	m.Members = slices.Clone(m.Members)
 	m.RemovedIDs = slices.Clone(m.RemovedIDs)
 	return m

@@ -94,6 +94,11 @@ func TestAddLearnerLogAndSnapshot(t *testing.T) {
 				t.Fatalf("unjoined local read: %v", err)
 			}
 			add := shardraft.MembershipChange{OperationID: "add-4", Action: "add-learner", Peer: shardraft.Peer{ID: 4, Address: "node-4:50051"}}
+			duplicate := add.Peer
+			duplicate.Address = leader.Membership().Members[0].Address
+			if _, err := leader.AddLearner(t.Context(), "add-duplicate-address", duplicate); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("added learner with an active member's gRPC address: %v", err)
+			}
 			first, err := leader.AddLearner(context.Background(), add.OperationID, add.Peer)
 			if err != nil {
 				t.Fatal(err)

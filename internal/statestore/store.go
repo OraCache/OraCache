@@ -82,6 +82,13 @@ type Heartbeat struct {
 	Resources      Resources
 }
 
+// HeartbeatReceipt records when CP received the last heartbeat for a node in a region.
+type HeartbeatReceipt struct {
+	NodeID     string
+	Region     string
+	ReceivedAt time.Time
+}
+
 // Snapshot — неизменяемая revision конфигурации и её тело. Config равен nil,
 // только когда в store ещё нет конфигурации (revision 0).
 type Snapshot struct {
@@ -102,6 +109,10 @@ type Store interface {
 
 	// Heartbeat возвращает последний heartbeat ноды.
 	Heartbeat(ctx context.Context, nodeID string) (Heartbeat, bool, error)
+
+	// HeartbeatReceipts returns receipts recorded while each node-region pair was
+	// continuously configured, including receipts older than the liveness TTL.
+	HeartbeatReceipts(ctx context.Context) ([]HeartbeatReceipt, error)
 
 	// Config возвращает текущий неизменяемый snapshot. Возвращённый Config —
 	// независимая копия; вызывающий код не должен менять через него состояние store.

@@ -32,6 +32,23 @@ type Peer struct {
 	RaftAddress string `json:"raft_address"`
 }
 
+// TimingStage identifies an observed operation inside the Raft instance.
+type TimingStage uint8
+
+const (
+	StageApply TimingStage = iota
+	StageReadIndex
+	StageCheckpoint
+	StageRestore
+)
+
+// Observer observes execution without changing Raft decisions. Methods must
+// return promptly and be safe to call on the owner loop or transport workers.
+type Observer interface {
+	ObserveDuration(TimingStage, time.Duration)
+	RecordSendError()
+}
+
 type Config struct {
 	RegionID string
 	ShardID  uint32
@@ -54,6 +71,7 @@ type Config struct {
 	// Zero selects the default (1000 applied entries).
 	SnapshotEntries uint64
 	Logger          raft.Logger
+	Observer        Observer
 }
 
 func (c Config) normalized() (Config, error) {
@@ -178,6 +196,7 @@ type Status struct {
 	CommitIndex   uint64
 	AppliedIndex  uint64
 	SnapshotIndex uint64
+	LastIndex     uint64
 	IsLearner     bool
 	Member        bool
 	// Ready means initialized and applied through a known committed position.

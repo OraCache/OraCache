@@ -43,6 +43,7 @@ type Forwarder struct {
 	AttemptTimeout time.Duration // per forwarded call; default 3s
 	Backoff        time.Duration // pause after a full unsuccessful round; default 150ms
 	Logger         *slog.Logger
+	Metrics        *Metrics
 	OnNotLeader    func() // schedules a background refresh, never waits for CP
 
 	mu        sync.Mutex
@@ -115,7 +116,7 @@ func notLeaderHint(err error) (addr string, term uint64, ok bool) {
 // forward runs call against the partition's group until it succeeds, fails with
 // a non-retryable error or the bounds are exhausted. call receives the node
 // address that served it.
-func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, call func(context.Context, pb.CacheGatewayClient, string) error) error {
+func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, operation string, call func(context.Context, pb.CacheGatewayClient, string) error) error {
 	route, token, err := f.Router.forwardingRoute(partition, write)
 	if err != nil {
 		return status.Error(codes.Unavailable, err.Error())
@@ -157,6 +158,7 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 		cursor  int
 		lastErr error
 	)
+	reason := "initial"
 	for i := 0; i < attempts && ctx.Err() == nil; i++ {
 		addr := hint
 		if addr == "" {
@@ -176,6 +178,9 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 			return status.Error(codes.Internal, derr.Error())
 		}
 		actx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		if f.Metrics != nil {
+			f.Metrics.forwards.WithLabelValues(operation, reason).Inc()
+		}
 		err = call(actx, cl, addr)
 		cancel()
 		if err == nil {
@@ -201,6 +206,7 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 
 		wait := false
 		if h, term, notLeader := notLeaderHint(err); notLeader {
+			reason = "not_leader"
 			if f.OnNotLeader != nil {
 				f.OnNotLeader()
 			}
@@ -215,6 +221,7 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 				if write {
 					return err // outcome unknown: never retry automatically
 				}
+				reason = "read_failover"
 				wait = cursor%len(order) == 0
 			default:
 				return err
@@ -263,7 +270,7 @@ func (f *Forwarder) Get(ctx context.Context, r *pb.GetRequest) (*pb.GetResponse,
 		return nil, err
 	}
 	var out *pb.GetResponse
-	err = f.forward(ctx, p, false, func(ctx context.Context, c pb.CacheGatewayClient, addr string) (err error) {
+	err = f.forward(ctx, p, false, "get", func(ctx context.Context, c pb.CacheGatewayClient, addr string) (err error) {
 		if out, err = c.Get(ctx, r); err == nil && out.ServedBy == nil {
 			out.ServedBy = f.served(addr, false, p)
 		}
@@ -278,7 +285,7 @@ func (f *Forwarder) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse,
 		return nil, err
 	}
 	var out *pb.PutResponse
-	err = f.forward(ctx, p, true, func(ctx context.Context, c pb.CacheGatewayClient, addr string) (err error) {
+	err = f.forward(ctx, p, true, "put", func(ctx context.Context, c pb.CacheGatewayClient, addr string) (err error) {
 		if out, err = c.Put(ctx, r); err == nil && out.ServedBy == nil {
 			out.ServedBy = f.served(addr, true, p)
 		}
@@ -293,7 +300,7 @@ func (f *Forwarder) Delete(ctx context.Context, r *pb.DeleteRequest) (*pb.Delete
 		return nil, err
 	}
 	var out *pb.DeleteResponse
-	err = f.forward(ctx, p, true, func(ctx context.Context, c pb.CacheGatewayClient, addr string) (err error) {
+	err = f.forward(ctx, p, true, "delete", func(ctx context.Context, c pb.CacheGatewayClient, addr string) (err error) {
 		if out, err = c.Delete(ctx, r); err == nil && out.ServedBy == nil {
 			out.ServedBy = f.served(addr, true, p)
 		}
@@ -330,7 +337,7 @@ func (f *Forwarder) BatchGet(ctx context.Context, r *pb.BatchGetRequest) (*pb.Ba
 		return nil, err
 	}
 	var out *pb.BatchGetResponse
-	err = f.forward(ctx, p, false, func(ctx context.Context, c pb.CacheGatewayClient, _ string) (err error) {
+	err = f.forward(ctx, p, false, "batch_get", func(ctx context.Context, c pb.CacheGatewayClient, _ string) (err error) {
 		out, err = c.BatchGet(ctx, r)
 		return err
 	})
@@ -347,7 +354,7 @@ func (f *Forwarder) BatchPut(ctx context.Context, r *pb.BatchPutRequest) (*pb.Ba
 		return nil, err
 	}
 	var out *pb.BatchPutResponse
-	err = f.forward(ctx, p, true, func(ctx context.Context, c pb.CacheGatewayClient, _ string) (err error) {
+	err = f.forward(ctx, p, true, "batch_put", func(ctx context.Context, c pb.CacheGatewayClient, _ string) (err error) {
 		out, err = c.BatchPut(ctx, r)
 		return err
 	})

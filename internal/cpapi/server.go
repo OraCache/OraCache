@@ -17,6 +17,7 @@ import (
 	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/statestore"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -104,6 +105,8 @@ type Server struct {
 	nodeTTL           time.Duration
 	startedAt         time.Time
 	metrics           *cpmetrics.Metrics
+	heartbeatDuration prometheus.Observer
+	getConfigDuration prometheus.Observer
 }
 
 // New создаёт сервер CP API. store не должен быть nil.
@@ -122,16 +125,38 @@ func New(store statestore.Store, opts ...Option) *Server {
 	for _, opt := range opts {
 		opt(s)
 	}
+	duration := cpmetrics.NewDuration(s.metrics.Prometheus(), "oracache_cp_rpc_duration_seconds", "Control Plane RPC handler duration in seconds.", "operation")
+	s.heartbeatDuration = duration.WithLabelValues("report_heartbeat")
+	s.getConfigDuration = duration.WithLabelValues("get_config")
 	s.startedAt = s.clock.Now()
+	s.metrics.RegisterGaugeFunc(cpmetrics.HeartbeatAge, "Seconds since the CP API received the last heartbeat from a configured node.", s.heartbeatAges)
 	return s
 }
 
 // Metrics возвращает реестр метрик сервера для экспозиции /metrics.
 func (s *Server) Metrics() *cpmetrics.Metrics { return s.metrics }
 
+func (s *Server) heartbeatAges(ctx context.Context) ([]cpmetrics.GaugeSample, error) {
+	receipts, err := s.store.HeartbeatReceipts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock.Now()
+	samples := make([]cpmetrics.GaugeSample, 0, len(receipts))
+	for _, receipt := range receipts {
+		samples = append(samples, cpmetrics.GaugeSample{
+			Labels: map[string]string{"region": receipt.Region, "node_id": receipt.NodeID},
+			Value:  max(0, now.Sub(receipt.ReceivedAt).Seconds()),
+		})
+	}
+	return samples, nil
+}
+
 // ReportHeartbeat реализует controlplanev1.ControlPlaneAPI. Он сохраняет полный
 // snapshot локальных partition-групп и возвращает текущую revision конфигурации.
 func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.HeartbeatRequest) (*controlplanev1.HeartbeatResponse, error) {
+	start := time.Now()
+	defer func() { s.heartbeatDuration.Observe(time.Since(start).Seconds()) }()
 	if req == nil {
 		s.metrics.Heartbeat(cpmetrics.HeartbeatInvalid)
 		return nil, status.Error(codes.InvalidArgument, "heartbeat request is required")
@@ -239,6 +264,8 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 // GetConfig выдаёт Gateway live-view при той же revision. Во время старта CP
 // может вернуть только revision, пока назначенные реплики собирают наблюдения.
 func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigRequest) (*controlplanev1.GetConfigResponse, error) {
+	start := time.Now()
+	defer func() { s.getConfigDuration.Observe(time.Since(start).Seconds()) }()
 	if req == nil {
 		s.metrics.ConfigPull(cpmetrics.PullError)
 		return nil, status.Error(codes.InvalidArgument, "config request is required")

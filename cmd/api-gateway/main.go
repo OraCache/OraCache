@@ -5,6 +5,7 @@
 // снимку.
 //
 // С флагом -listen Gateway пересылает клиентские RPC в storage-node.
+// Диагностика доступна через /routes, /healthz и /metrics.
 package main
 
 import (
@@ -27,6 +28,7 @@ import (
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	gatewayv1 "github.com/OraCache/oracache/gen/gateway/v1"
 	membershipv1 "github.com/OraCache/oracache/gen/membership/v1"
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/gateway"
 )
 
@@ -40,7 +42,7 @@ func main() {
 		pollInterval = flag.Duration("poll-interval", gateway.DefaultPollInterval, "config pull interval")
 		rpcTimeout   = flag.Duration("rpc-timeout", gateway.DefaultRPCTimeout, "single CP RPC timeout")
 		listen       = flag.String("listen", "", "client gRPC address (empty serves diagnostics only)")
-		statusListen = flag.String("status-listen", defaultStatusListen, `HTTP address for /routes and /healthz ("none" disables)`)
+		statusListen = flag.String("status-listen", defaultStatusListen, `HTTP address for /routes, /healthz and /metrics ("none" disables)`)
 	)
 	flag.Parse()
 	if *region == "" || *nodeID == "" {
@@ -55,7 +57,9 @@ func main() {
 		logger.Error("create router", "region", *region, "error", err)
 		os.Exit(1)
 	}
-	conn, err := grpc.NewClient(*cpAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(*cpAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDisableServiceConfig())
 	if err != nil {
 		logger.Error("dial cp", "address", *cpAddr, "error", err)
 		os.Exit(1)
@@ -63,6 +67,9 @@ func main() {
 	defer conn.Close()
 
 	poller := gateway.NewPoller(controlplanev1.NewControlPlaneAPIClient(conn), router, *nodeID)
+	metrics := cpmetrics.NewRegistry()
+	metrics.RegisterProcessCollectors()
+	poller.Metrics = gateway.NewMetrics(metrics.Prometheus())
 	poller.Interval = *pollInterval
 	poller.RPCTimeout = *rpcTimeout
 	poller.Logger = logger
@@ -74,7 +81,7 @@ func main() {
 			logger.Error("status listen", "address", *statusListen, "error", err)
 			os.Exit(1)
 		}
-		stopStatus = serveStatus(statusListener, router, *region, logger)
+		stopStatus = serveStatus(statusListener, router, metrics, *region, logger)
 	} else {
 		stopStatus = func() {}
 	}
@@ -90,7 +97,7 @@ func main() {
 			logger.Error("client gRPC listen", "address", *listen, "error", err)
 			os.Exit(1)
 		}
-		done, stopRPC := serveGateway(listener, poller, logger)
+		done, stopRPC := serveGateway(listener, poller, metrics, logger)
 		defer stopRPC()
 		serveErr = done
 		logger.Info("api-gateway client endpoint listening", "address", listener.Addr().String())
@@ -117,9 +124,9 @@ func main() {
 	}
 }
 
-func serveGateway(listener net.Listener, poller *gateway.Poller, logger *slog.Logger) (<-chan error, func()) {
-	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh}
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
+func serveGateway(listener net.Listener, poller *gateway.Poller, metrics *cpmetrics.Metrics, logger *slog.Logger) (<-chan error, func()) {
+	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh, Metrics: poller.Metrics}
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.UnaryInterceptor(cpmetrics.CacheRPCInterceptor(metrics.Prometheus())))
 	gatewayv1.RegisterCacheGatewayServer(server, forwarder)
 	membershipv1.RegisterMembershipAdminServer(server, &gateway.MembershipForwarder{Router: poller.Router})
 	done := make(chan error, 1)
@@ -143,8 +150,26 @@ func serveGateway(listener net.Listener, poller *gateway.Poller, logger *slog.Lo
 }
 
 // newStatusHandler собирает диагностические эндпоинты routing map.
-func newStatusHandler(router *gateway.Router) http.Handler {
+func newStatusHandler(router *gateway.Router, metrics *cpmetrics.Metrics) http.Handler {
 	mux := http.NewServeMux()
+	metrics.RegisterGaugeFunc("oracache_gateway_partitions_without_route", "Partitions without a route in the applied Gateway map.", func(context.Context) ([]cpmetrics.GaugeSample, error) {
+		snapshot := router.Routes()
+		if !snapshot.Ready() {
+			return nil, nil
+		}
+		return []cpmetrics.GaugeSample{
+			{Labels: map[string]string{"operation": "get"}, Value: float64(snapshot.MissingReads())},
+			{Labels: map[string]string{"operation": "put"}, Value: float64(snapshot.MissingWrites())},
+		}, nil
+	})
+	metrics.RegisterGaugeFunc("oracache_gateway_config_revision", "Revision of the applied Gateway map.", func(context.Context) ([]cpmetrics.GaugeSample, error) {
+		snapshot := router.Routes()
+		if !snapshot.Ready() {
+			return nil, nil
+		}
+		return []cpmetrics.GaugeSample{{Value: float64(snapshot.Revision)}}, nil
+	})
+	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/routes", func(w http.ResponseWriter, _ *http.Request) {
 		snapshot := router.Routes()
 		w.Header().Set("Content-Type", "application/json")
@@ -167,8 +192,8 @@ func newStatusHandler(router *gateway.Router) http.Handler {
 
 // serveStatus обслуживает диагностические эндпоинты routing map на переданном
 // listener'е. Возвращает функцию остановки; вызов её безопасен повторно.
-func serveStatus(listener net.Listener, router *gateway.Router, region string, logger *slog.Logger) func() {
-	mux := newStatusHandler(router)
+func serveStatus(listener net.Listener, router *gateway.Router, metrics *cpmetrics.Metrics, region string, logger *slog.Logger) func() {
+	mux := newStatusHandler(router, metrics)
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 2 * time.Second}
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {

@@ -16,6 +16,7 @@ import (
 	membershipv1 "github.com/OraCache/oracache/gen/membership/v1"
 	"github.com/OraCache/oracache/internal/cpapi"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/gateway"
 	"github.com/OraCache/oracache/internal/node"
 	"github.com/OraCache/oracache/internal/statestore"
@@ -87,7 +88,7 @@ func TestMembershipThroughGatewayAndCPProjection(t *testing.T) {
 	poller := gateway.NewPoller(controlplanev1.NewControlPlaneAPIClient(raftTestClient(t, cpListener)), router, "membership-test-gateway")
 	poller.Logger = logger
 	gwListener := raftTestListener(t)
-	_, stopGateway := serveGateway(gwListener, poller, logger)
+	_, stopGateway := serveGateway(gwListener, poller, cpmetrics.NewRegistry(), logger)
 	t.Cleanup(stopGateway)
 	conn := raftTestClient(t, gwListener)
 	admin := membershipv1.NewMembershipAdminClient(conn)

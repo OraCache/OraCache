@@ -22,12 +22,23 @@ type MemoryStore struct {
 	mu          sync.RWMutex
 	heartbeats  map[string]Heartbeat
 	memberships map[groupKey]cpconfig.GroupMembership
+	receipts    map[heartbeatSource]heartbeatReceiptTime // keys are the configured node-region pairs
 	snapshot    Snapshot
 }
 
 type groupKey struct {
 	region    string
 	partition uint32
+}
+
+type heartbeatSource struct {
+	nodeID string
+	region string
+}
+
+type heartbeatReceiptTime struct {
+	receivedAt time.Time
+	received   bool
 }
 
 // NewMemory возвращает пустой in-memory store.
@@ -113,6 +124,12 @@ func (s *MemoryStore) UpsertHeartbeat(ctx context.Context, heartbeat Heartbeat) 
 		s.memberships[key] = m
 	}
 	s.heartbeats[heartbeat.NodeID] = CloneHeartbeat(heartbeat)
+	// Track receipt times by region independently of the routing heartbeat.
+	source := heartbeatSource{nodeID: heartbeat.NodeID, region: heartbeat.Region}
+	if previous, configured := s.receipts[source]; configured &&
+		(!previous.received || heartbeat.ReceivedAt.After(previous.receivedAt)) {
+		s.receipts[source] = heartbeatReceiptTime{receivedAt: heartbeat.ReceivedAt, received: true}
+	}
 	return s.snapshot.Revision, nil
 }
 
@@ -128,6 +145,25 @@ func (s *MemoryStore) Heartbeat(ctx context.Context, nodeID string) (Heartbeat, 
 		return Heartbeat{}, false, nil
 	}
 	return CloneHeartbeat(heartbeat), true, nil
+}
+
+// HeartbeatReceipts реализует Store.
+func (s *MemoryStore) HeartbeatReceipts(ctx context.Context) ([]HeartbeatReceipt, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.snapshot.Config == nil {
+		return nil, nil
+	}
+	receipts := make([]HeartbeatReceipt, 0, len(s.snapshot.Config.Nodes))
+	for _, node := range s.snapshot.Config.Nodes {
+		if receipt := s.receipts[heartbeatSource{nodeID: node.ID, region: node.Region}]; receipt.received {
+			receipts = append(receipts, HeartbeatReceipt{NodeID: node.ID, Region: node.Region, ReceivedAt: receipt.receivedAt})
+		}
+	}
+	return receipts, nil
 }
 
 // Config реализует Store.
@@ -167,6 +203,13 @@ func (s *MemoryStore) ApplyConfig(ctx context.Context, config *cpconfig.Config) 
 			delete(s.memberships, key)
 		}
 	}
+	// Keep receipt times only for pairs present in both configurations.
+	receipts := make(map[heartbeatSource]heartbeatReceiptTime, len(config.Nodes))
+	for _, node := range config.Nodes {
+		source := heartbeatSource{nodeID: node.ID, region: node.Region}
+		receipts[source] = s.receipts[source]
+	}
+	s.receipts = receipts
 	s.snapshot = Snapshot{Revision: config.Revision, Config: config.Clone()}
 	return nil
 }

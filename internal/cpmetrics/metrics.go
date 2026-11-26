@@ -1,26 +1,27 @@
-// Package cpmetrics реализует минимальный Prometheus text-exposition реестр
-// для метрик Control Plane.
-//
-// Реестр намеренно не тянет внешних зависимостей: экспонируемые метрики CP —
-// несколько счётчиков и gauges, а формат exposition стабилен и прост. Если
-// позже понадобятся гистограммы или pull-клиенты, реестр заменяется на
-// prometheus/client_golang без изменения вызывающего кода.
+// Package cpmetrics exposes the established Control Plane metrics alongside standard Prometheus collectors.
 package cpmetrics
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
 )
 
 // Метрики Control Plane. Имена фиксируются: меняются только через отдельное
 // изменение контракта наблюдаемости.
 const (
 	HeartbeatTotal  = "oracache_cp_heartbeat_total"
+	HeartbeatAge    = "oracache_cp_heartbeat_age_seconds"
 	ConfigPullTotal = "oracache_cp_config_pull_total"
 	ConfigRevision  = "oracache_cp_config_revision"
 	LiveNodes       = "oracache_cp_live_nodes"
@@ -49,8 +50,15 @@ const (
 )
 
 type metricMeta struct {
-	typ  string
-	help string
+	typ     string
+	help    string
+	collect func(context.Context) ([]GaugeSample, error)
+}
+
+// GaugeSample is one value of a gauge family collected at scrape time.
+type GaugeSample struct {
+	Labels map[string]string
+	Value  float64
 }
 
 type series struct {
@@ -58,26 +66,41 @@ type series struct {
 	labels string
 }
 
-// Metrics — потокобезопасный реестр метрик CP.
+// Metrics — потокобезопасный реестр метрик.
 type Metrics struct {
-	mu       sync.Mutex
-	metadata map[string]metricMeta
-	counters map[series]uint64
-	gauges   map[series]float64
+	prometheus *prometheus.Registry
+	mu         sync.Mutex
+	metadata   map[string]metricMeta
+	counters   map[series]uint64
+	gauges     map[series]float64
 }
 
 // New создаёт реестр с зарегистрированными метриками Control Plane.
 func New() *Metrics {
+	m := NewRegistry()
+	m.Describe(HeartbeatTotal, "counter", "Heartbeats received by the CP API.")
+	m.Describe(ConfigPullTotal, "counter", "Config pulls served by the CP API.")
+	m.Describe(ConfigRevision, "gauge", "Current Control Plane configuration revision.")
+	m.Describe(LiveNodes, "gauge", "Nodes in the last live config view, by state.")
+	return m
+}
+
+// NewRegistry creates an empty registry.
+func NewRegistry() *Metrics {
 	return &Metrics{
-		metadata: map[string]metricMeta{
-			HeartbeatTotal:  {typ: "counter", help: "Heartbeats received by the CP API."},
-			ConfigPullTotal: {typ: "counter", help: "Config pulls served by the CP API."},
-			ConfigRevision:  {typ: "gauge", help: "Current Control Plane configuration revision."},
-			LiveNodes:       {typ: "gauge", help: "Nodes in the last live config view, by state."},
-		},
-		counters: make(map[series]uint64),
-		gauges:   make(map[series]float64),
+		prometheus: prometheus.NewRegistry(),
+		metadata:   make(map[string]metricMeta),
+		counters:   make(map[series]uint64),
+		gauges:     make(map[series]float64),
 	}
+}
+
+// RegisterGaugeFunc registers a family whose samples are collected on each
+// scrape. The collector may be called concurrently by separate scrapes.
+func (m *Metrics) RegisterGaugeFunc(name, help string, collect func(context.Context) ([]GaugeSample, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.metadata[name] = metricMeta{typ: "gauge", help: help, collect: collect}
 }
 
 // Describe регистрирует метрику до первого использования.
@@ -168,25 +191,48 @@ func (h metricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	var body bytes.Buffer
+	if err := h.metrics.render(r.Context(), &body); err != nil {
+		http.Error(w, "metrics collection failed", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_ = h.metrics.Render(w)
+	if r.Method == http.MethodGet {
+		_, _ = body.WriteTo(w)
+	}
 }
 
 // Render пишет exposition в текстовом формате Prometheus. Вывод
 // детерминирован: метрики и series сортируются.
 func (m *Metrics) Render(w io.Writer) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	return m.render(context.Background(), w)
+}
 
-	names := make(map[string]struct{}, len(m.metadata))
-	for name := range m.metadata {
+func (m *Metrics) render(ctx context.Context, w io.Writer) error {
+	m.mu.Lock()
+	metadata := maps.Clone(m.metadata)
+	counters := maps.Clone(m.counters)
+	gauges := maps.Clone(m.gauges)
+	m.mu.Unlock()
+
+	names := make(map[string]struct{}, len(metadata))
+	for name, meta := range metadata {
 		names[name] = struct{}{}
+		if meta.collect == nil {
+			continue
+		}
+		samples, err := meta.collect(ctx)
+		if err != nil {
+			return fmt.Errorf("collect %s: %w", name, err)
+		}
+		for _, sample := range samples {
+			gauges[series{name: name, labels: canonicalLabels(sample.Labels)}] = sample.Value
+		}
 	}
-	for key := range m.counters {
+	for key := range counters {
 		names[key.name] = struct{}{}
 	}
-	for key := range m.gauges {
+	for key := range gauges {
 		names[key.name] = struct{}{}
 	}
 	ordered := make([]string, 0, len(names))
@@ -196,36 +242,45 @@ func (m *Metrics) Render(w io.Writer) error {
 	sort.Strings(ordered)
 
 	for _, name := range ordered {
-		meta, ok := m.metadata[name]
+		meta, ok := metadata[name]
 		if !ok {
 			meta = metricMeta{typ: "untyped", help: name}
 		}
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", name, meta.help, name, meta.typ); err != nil {
 			return err
 		}
-		seriesList := make([]series, 0, len(m.counters)+len(m.gauges))
-		for key := range m.counters {
+		seriesList := make([]series, 0, len(counters)+len(gauges))
+		for key := range counters {
 			if key.name == name {
 				seriesList = append(seriesList, key)
 			}
 		}
 		sort.Slice(seriesList, func(i, j int) bool { return seriesList[i].labels < seriesList[j].labels })
 		for _, key := range seriesList {
-			if _, err := fmt.Fprintf(w, "%s%s %d\n", name, key.labels, m.counters[key]); err != nil {
+			if _, err := fmt.Fprintf(w, "%s%s %d\n", name, key.labels, counters[key]); err != nil {
 				return err
 			}
 		}
 		seriesList = seriesList[:0]
-		for key := range m.gauges {
+		for key := range gauges {
 			if key.name == name {
 				seriesList = append(seriesList, key)
 			}
 		}
 		sort.Slice(seriesList, func(i, j int) bool { return seriesList[i].labels < seriesList[j].labels })
 		for _, key := range seriesList {
-			if _, err := fmt.Fprintf(w, "%s%s %s\n", name, key.labels, formatFloat(m.gauges[key])); err != nil {
+			if _, err := fmt.Fprintf(w, "%s%s %s\n", name, key.labels, formatFloat(gauges[key])); err != nil {
 				return err
 			}
+		}
+	}
+	families, err := m.prometheus.Gather()
+	if err != nil {
+		return fmt.Errorf("gather Prometheus collectors: %w", err)
+	}
+	for _, family := range families {
+		if _, err := expfmt.MetricFamilyToText(w, family); err != nil {
+			return fmt.Errorf("encode metric family %s: %w", family.GetName(), err)
 		}
 	}
 	return nil
