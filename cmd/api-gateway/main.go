@@ -26,6 +26,7 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	gatewayv1 "github.com/OraCache/oracache/gen/gateway/v1"
+	membershipv1 "github.com/OraCache/oracache/gen/membership/v1"
 	"github.com/OraCache/oracache/internal/gateway"
 )
 
@@ -120,6 +121,7 @@ func serveGateway(listener net.Listener, poller *gateway.Poller, logger *slog.Lo
 	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
 	gatewayv1.RegisterCacheGatewayServer(server, forwarder)
+	membershipv1.RegisterMembershipAdminServer(server, &gateway.MembershipForwarder{Router: poller.Router})
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	return done, func() {

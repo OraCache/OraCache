@@ -23,6 +23,7 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	membershipv1 "github.com/OraCache/oracache/gen/membership/v1"
 	"github.com/OraCache/oracache/internal/cpagent"
 	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/store"
@@ -193,6 +194,7 @@ func New(cfg Config) (*Node, error) {
 	}
 	n.grpcSrv = grpc.NewServer(serverOptions...)
 	pb.RegisterCacheGatewayServer(n.grpcSrv, shardraft.GatewayServer(n.inst))
+	membershipv1.RegisterMembershipAdminServer(n.grpcSrv, &membershipServer{n: n})
 	return n, nil
 }
 
