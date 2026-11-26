@@ -39,7 +39,7 @@ func TestForwarderLateOldSuccessCannotEraseNewPreference(t *testing.T) {
 	oldDone := make(chan error, 1)
 	go func() {
 		defer close(oldDone)
-		oldDone <- f.forward(context.Background(), 0, true, func(context.Context, pb.CacheGatewayClient, string) error {
+		oldDone <- f.forward(context.Background(), 0, true, "put", func(context.Context, pb.CacheGatewayClient, string) error {
 			close(started)
 			<-release
 			return nil
@@ -61,7 +61,7 @@ func TestForwarderLateOldSuccessCannotEraseNewPreference(t *testing.T) {
 	if err := r.ApplyView(view); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.forward(context.Background(), 0, true, func(_ context.Context, _ pb.CacheGatewayClient, addr string) error {
+	if err := f.forward(context.Background(), 0, true, "put", func(_ context.Context, _ pb.CacheGatewayClient, addr string) error {
 		if addr == "a2" {
 			st, _ := status.New(codes.FailedPrecondition, "not leader").WithDetails(&errdetails.ErrorInfo{Reason: "NOT_LEADER", Domain: "oracache.shardraft", Metadata: map[string]string{"address": "a3", "term": "3"}})
 			return st.Err()
@@ -79,7 +79,7 @@ func TestForwarderLateOldSuccessCannotEraseNewPreference(t *testing.T) {
 		t.Fatal(err)
 	}
 	var first string
-	if err := f.forward(context.Background(), 0, true, func(_ context.Context, _ pb.CacheGatewayClient, addr string) error { first = addr; return nil }); err != nil {
+	if err := f.forward(context.Background(), 0, true, "put", func(_ context.Context, _ pb.CacheGatewayClient, addr string) error { first = addr; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if first != "a3" {
@@ -107,7 +107,7 @@ func TestForwarderHintsCannotCrossConfiguredRegions(t *testing.T) {
 			return nil, nil
 		}}
 		var calls []string
-		if err := f.forward(context.Background(), 0, tc.write, func(_ context.Context, _ pb.CacheGatewayClient, addr string) error {
+		if err := f.forward(context.Background(), 0, tc.write, "test", func(_ context.Context, _ pb.CacheGatewayClient, addr string) error {
 			calls = append(calls, addr)
 			if len(calls) == 1 {
 				st, _ := status.New(codes.FailedPrecondition, "not leader").WithDetails(&errdetails.ErrorInfo{Reason: "NOT_LEADER", Domain: "oracache.shardraft", Metadata: map[string]string{"address": tc.foreign}})
@@ -136,7 +136,7 @@ func TestForwarderRejectsUnconfiguredLearnedPreference(t *testing.T) {
 		return nil, nil
 	}}
 	var first string
-	if err := f.forward(context.Background(), 0, true, func(_ context.Context, _ pb.CacheGatewayClient, addr string) error { first = addr; return nil }); err != nil {
+	if err := f.forward(context.Background(), 0, true, "put", func(_ context.Context, _ pb.CacheGatewayClient, addr string) error { first = addr; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if first != "a1" {

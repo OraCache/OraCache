@@ -1,0 +1,16 @@
+# Add to compose.cp.yaml to monitor the real single-group cluster.
+services:
+  prometheus:
+    extends:
+      file: compose.cp-monitoring.yaml
+      service: prometheus
+    volumes:
+      - ./configs/monitoring/prometheus-real.yml:/etc/prometheus/prometheus.yml:ro
+      - ./configs/monitoring/raft-rules.yml:/etc/prometheus/raft-rules.yml:ro
+
+  grafana:
+    extends:
+      file: compose.cp-monitoring.yaml
+      service: grafana
+    environment:
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/oracache-real.json

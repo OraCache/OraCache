@@ -45,7 +45,7 @@ curl -fsS http://127.0.0.1:9466/metrics
 `oracache_cp_heartbeat_age_seconds{region,node_id}` доступна на
 `127.0.0.1:9464/metrics` по умолчанию. После истечения TTL она остаётся
 видимой, пока пара нода–регион есть в конфигурации. В `compose.cp.yaml`
-порт метрик CP отключён.
+метрики CP и Storage Node доступны внутри сети Compose.
 
 ### Остановка
 
@@ -68,7 +68,125 @@ GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
 
 Правила маршрутизации и повторов описаны в [ADR-004](docs/ADR-004-cp-raft-gateway-routing.md).
 
-### Мониторинг локального PoC
+### Мониторинг реального кластера
+
+Поднимите CP API с MemoryStore, Gateway, три Storage Node одной Raft-группы
+и мониторинг в отдельном проекте. При необходимости выберите свободные
+локальные порты через переменные окружения.
+
+```sh
+export ORACACHE_CP_PORT=28080 ORACACHE_CP_STATUS_PORT=9466
+export ORACACHE_PROMETHEUS_PORT=9090 ORACACHE_GRAFANA_PORT=3000
+docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml up -d --build
+curl -fsS "http://127.0.0.1:${ORACACHE_CP_STATUS_PORT}/routes"
+```
+
+Дождитесь маршрута для партиции `0` и выполните команды GET, PUT и DELETE из
+раздела «Запросы через gateway». Для графиков на основе `rate` нужен scrape
+до запросов и хотя бы ещё один после них. В Compose Gateway публикует
+диагностику на loopback, CP API отдаёт `/metrics` на внутреннем порту 9464,
+а Storage Node на существующем внутреннем Raft-порту 28191.
+
+- [Дашборд реального кластера](http://127.0.0.1:3000/d/oracache-real-cluster)
+- [Цели сбора Prometheus](http://127.0.0.1:9090/targets)
+
+Скрипт повторяет чистый запуск и три отказных сценария на отдельных проектах
+со свободными портами. Он требует Docker Compose, Go, `curl` и `jq`, выполняет
+RPC с дедлайном 3 с и выводит ответы и значения метрик для отчёта.
+
+```sh
+mkdir -p .reports
+integration/e2e/check-observability.sh > .reports/observability.log 2>&1
+```
+
+#### PromQL
+
+```sh
+prom_query() {
+  curl -fsSG "http://127.0.0.1:${ORACACHE_PROMETHEUS_PORT:-9090}/api/v1/query" \
+    --data-urlencode "query=$1" | jq -c '.data.result[]'
+}
+
+prom_query 'up{job=~"cp-api|api-gateway|storage-node"}'
+prom_query 'sum by (job,operation) (rate(oracache_cache_rpc_total[1m]))'
+prom_query 'sum by (job,operation) (rate(oracache_cache_rpc_total{grpc_code!="OK"}[1m])) / (sum by (job,operation) (rate(oracache_cache_rpc_total[1m])) > 0)'
+for q in 0.50 0.95 0.99; do
+  prom_query "histogram_quantile($q, sum by (job,operation,le) (rate(oracache_cache_rpc_duration_seconds_bucket[1m])))"
+done
+prom_query 'sum by (job) (rate(oracache_cache_rpc_total{operation="get",grpc_code="OK",outcome="hit"}[1m])) / (sum by (job) (rate(oracache_cache_rpc_total{operation="get",grpc_code="OK",outcome=~"hit|miss|version_not_found"}[1m])) > 0)'
+prom_query 'time() - oracache_gateway_config_last_success_timestamp_seconds'
+prom_query 'oracache_raft_commit_index - oracache_raft_applied_index'
+prom_query 'oracache_raft_follower_lag_entries'
+prom_query 'oracache_raft_replica_state'
+```
+
+Доля gRPC-ошибок считается среди обработанных RPC. Доменный `MISS`
+получает gRPC `OK` и учитывается в знаменателе доли попаданий. PromQL
+возвращает долю от 0 до 1, а Grafana показывает её в процентах. Если
+за минуту не было подходящих GET, у графика нет значения. Перцентили
+рассчитываются отдельно для каждого слоя. Таймер Gateway включает
+маршрутизацию, ожидание Storage Node и повторы. Таймер Storage Node
+измеряет собственный обработчик, включая ожидание Raft.
+
+| Сигнал | Источник, единицы и проверка |
+| --- | --- |
+| `oracache_cache_rpc_total`, `oracache_cache_rpc_duration_seconds` | Число завершённых GET, PUT и DELETE и время обработчика в секундах на серверной границе Gateway и Storage Node. Сверьте `outcome`, `grpc_code` и `_count` после клиентских запросов. |
+| `oracache_gateway_forward_attempts_total` | Число запущенных исходящих RPC. `reason` выделяет первый вызов, фактический повтор после NOT_LEADER и повтор чтения после временной ошибки. Batch RPC видны в пересылке. |
+| `oracache_cp_rpc_duration_seconds` | Время обработчиков `ReportHeartbeat` и `GetConfig` в секундах. Счётчик гистограммы растёт при heartbeat и опросе. |
+| `oracache_gateway_config_refresh_total`, `oracache_gateway_config_last_success_timestamp_seconds`, `oracache_gateway_config_revision` | Результаты опроса и применения карты, Unix-время последнего принятого ответа и ревизия применённой карты. Ответ с прежней ревизией подтверждает связь с CP. Сверьте ревизию с `/routes`. |
+| `oracache_raft_{is_leader,is_follower,has_leader,ready,term,commit_index,applied_index,snapshot_index,last_index}` | Признаки 0/1, терм и позиции в записях лога из одного `Status()` на scrape. Запись продвигает commit и applied. Конец лога включает незакоммиченные записи. Индекс снапшота до первого чекпоинта равен 0. |
+| `oracache_raft_stage_duration_seconds`, `oracache_raft_transport_send_errors_total` | Время выполнения команды в apply, ожидания результата ReadIndex до ожидания локального apply, кодирования чекпоинта и восстановления Store, в секундах. ReadIndex учитывает полученные результаты. Счётчик отправок учитывает ошибки вызова транспорта. Проверьте `_count` после GET/PUT, после чекпоинта и при установке снапшота. |
+| `process_cpu_seconds_total`, `process_resident_memory_bytes`, `go_memstats_heap_alloc_bytes`, `go_goroutines` | CPU-время процесса, RSS, занятый Go heap и число горутин. `rate(process_cpu_seconds_total[1m])` даёт занятые ядра. CPU и RSS проверены в Linux-контейнерах и могут отсутствовать при запуске на macOS. |
+| `oracache_storage_keys`, `oracache_storage_accounted_bytes` | `Store.Stats()` на каждой реплике даёт число ключей и байты, списанные из бюджета Store. Эти байты показаны отдельно от RSS. Сверьте изменение после PUT и DELETE. |
+
+Очередь применения считается по двум индексам одной реплики. Снимок
+метрик обновляется перед применением группы записей и после завершения
+итерации Raft, поэтому короткий разрыв может пройти между scrape. Для оценки
+отставания follower используется commit наблюдаемого лидера той же
+пары регион–партиция. Правило требует одного лидера в максимальном
+наблюдаемом терме, а разницу ограничивает снизу нулём из-за разновременных
+scrape. При неизвестном или неоднозначном лидере серия отсутствует.
+
+В «Ролях реплик по партициям» выберите «Регион матрицы» и, если нужно,
+конкретную «Партицию матрицы». `All` показывает все партиции выбранного
+региона. Строки таблицы — партиции, столбцы — ноды этого региона.
+Пагинация под таблицей переключает только страницы строк. `L` означает одного
+наблюдаемого лидера в максимальном терме, `F` — follower, `?` —
+лидерство не подтверждено, `↓` — пропал сигнал от реплики, которую
+Prometheus видел за последние 5 минут. `—` означает отсутствие данных о
+реплике в этой ячейке. Для проверки запланированных назначений используйте
+`cp-topology status` в профиле с etcd.
+
+#### Ожидаемые сигналы при отказах
+
+| Сценарий | Что проверить |
+| --- | --- |
+| Остановлен лидер, две ноды живы | `up` остановленной ноды равен 0. Другой лидер появляется с более высоким термом. GET через прежний адрес Gateway возвращает подтверждённую версию, следующий PUT подтверждается. Ревизия карты сохраняется. |
+| Разорвана связь Gateway с CP | `rpc_error` растёт, отметка последнего принятого ответа стоит, все пять scrape-целей остаются UP. GET и PUT доступны по последней карте при живой группе. |
+| Приостановлены два follower, CP работает | CP остаётся UP, Gateway получает конфигурацию, клиентский PUT с дедлайном теряет подтверждение. Когда лидерство теряется, серия отставания follower отсутствует. После снятия паузы PUT снова подтверждается. |
+
+`up` описывает доступность scrape. Ready и известный лидер показывают
+локальное состояние реплики. Доступность записи проверяется подтверждением
+реального PUT с дедлайном. Стенд покрывает одну группу в одном регионе и
+MemoryStore. WAN, WAL, TTL, AddNode и доля устаревших ответов остаются
+вне покрытия этого стенда со строгим GET. При повторном запуске процесс Storage Node начинает с
+пустой памятью. Восстановление прежнего участника Raft требует персистентного
+состояния Storage Node (#108).
+
+```sh
+docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml down --volumes
+```
+
+#### Проверка конфигураций Prometheus
+
+```sh
+docker run --rm --entrypoint /bin/promtool -v "$PWD/configs/monitoring:/checks:ro" -w /checks \
+  prom/prometheus:v3.5.0 check config prometheus.yml prometheus-real.yml
+docker run --rm --entrypoint /bin/promtool -v "$PWD/configs/monitoring:/checks:ro" -w /checks \
+  prom/prometheus:v3.5.0 test rules raft-rules.test.yml
+```
+
+### Мониторинг синтетических агентов
 
 Этот стенд запускает два агента с заданными ролями партиций, Prometheus
 и Grafana. Агенты имитируют heartbeat для проверки метрик. Для проверки

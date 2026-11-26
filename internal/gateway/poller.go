@@ -36,6 +36,7 @@ type Poller struct {
 	Interval   time.Duration
 	RPCTimeout time.Duration
 	Logger     *slog.Logger
+	Metrics    *Metrics
 	refresh    chan struct{}
 }
 
@@ -76,6 +77,15 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	if timeout <= 0 {
 		timeout = DefaultRPCTimeout
 	}
+	result := "rejected"
+	if p.Metrics != nil {
+		defer func() {
+			if result != "rpc_error" && result != "rejected" {
+				p.Metrics.lastSuccess.WithLabelValues().SetToCurrentTime()
+			}
+			p.Metrics.refreshes.WithLabelValues(result).Inc()
+		}()
+	}
 	rpcCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -86,6 +96,7 @@ func (p *Poller) Refresh(ctx context.Context) error {
 		Kind:          controlplanev1.AgentKind_AGENT_KIND_GATEWAY,
 	})
 	if err != nil {
+		result = "rpc_error"
 		return fmt.Errorf("oracache/gateway: get config: %w", err)
 	}
 	if resp == nil {
@@ -96,6 +107,7 @@ func (p *Poller) Refresh(ctx context.Context) error {
 	}
 	if resp.GetConfig() == nil {
 		if resp.GetRevision() == known {
+			result = "unchanged"
 			return nil
 		}
 		return errors.New("oracache/gateway: CP returned a new revision without a config")
@@ -112,12 +124,14 @@ func (p *Poller) Refresh(ctx context.Context) error {
 		return fmt.Errorf("oracache/gateway: apply live view: %w", err)
 	}
 	if resp.GetRevision() == known {
+		result = "applied_same_revision"
 		p.logger().Debug("gateway live view refreshed",
 			"node_id", p.NodeID,
 			"region", p.Router.Region(),
 			"config_revision", cfg.Revision,
 		)
 	} else {
+		result = "applied_new_revision"
 		p.logger().Info("gateway routing map updated",
 			"node_id", p.NodeID,
 			"region", p.Router.Region(),

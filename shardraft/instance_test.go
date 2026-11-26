@@ -349,6 +349,7 @@ func TestClientCancellationDoesNotCancelCommittedApply(t *testing.T) {
 	var release sync.Once
 	t.Cleanup(func() { release.Do(func() { close(backend.release) }) })
 	eventually(t, "single node leader", func() bool { return n.Status().Ready && n.Status().Role == "StateLeader" })
+	before := n.Status()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	returned := make(chan error, 1)
@@ -357,6 +358,13 @@ func TestClientCancellationDoesNotCancelCommittedApply(t *testing.T) {
 	case <-backend.entered:
 	case <-time.After(3 * time.Second):
 		t.Fatal("apply did not start")
+	}
+	applying := n.Status()
+	if applying.CommitIndex != before.CommitIndex+1 || applying.AppliedIndex != before.AppliedIndex || applying.Ready {
+		t.Fatalf("status while committed write is waiting for apply = %+v, prior status = %+v", applying, before)
+	}
+	if heartbeat := n.HeartbeatStatus(); heartbeat != before {
+		t.Fatalf("routing heartbeat changed before apply: %+v; want %+v", heartbeat, before)
 	}
 	cancel()
 	if err := <-returned; status.Code(err) != codes.Canceled {
@@ -370,6 +378,10 @@ func TestClientCancellationDoesNotCancelCommittedApply(t *testing.T) {
 	if err != nil || string(g.Data) != "yes" {
 		t.Fatalf("committed write missing: %v %v", g, err)
 	}
+	eventually(t, "heartbeat advances after apply", func() bool {
+		heartbeat := n.HeartbeatStatus()
+		return heartbeat.Ready && heartbeat.AppliedIndex == applying.CommitIndex
+	})
 }
 
 func TestLifecycleAndTransportBoundaries(t *testing.T) {

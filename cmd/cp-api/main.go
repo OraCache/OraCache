@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	"github.com/OraCache/oracache/internal/cpapi"
@@ -41,6 +42,7 @@ func serveMetrics(listen string, api *cpapi.Server, logger *slog.Logger) error {
 	if listen == "" {
 		return nil
 	}
+	api.Metrics().RegisterProcessCollectors()
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", api.Metrics().Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -52,8 +54,9 @@ func serveMetrics(listen string, api *cpapi.Server, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 2 * time.Second}
 	go func() {
-		if err := http.Serve(metricsListener, mux); err != nil {
+		if err := server.Serve(metricsListener); err != nil {
 			logger.Error("metrics server stopped", "address", listen, "error", err)
 		}
 	}()

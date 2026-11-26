@@ -1,0 +1,42 @@
+groups:
+  - name: ora-raft
+    rules:
+      - record: oracache_raft_leader_at_max_term
+        expr: |
+          (oracache_raft_is_leader == 1)
+          and
+          (oracache_raft_term == on (region, partition) group_left
+            max by (region, partition) (oracache_raft_term))
+          and on (job, instance) (up{job="storage-node"} == 1)
+      - record: oracache_raft_follower_lag_entries
+        expr: |
+          clamp_min(
+            (
+              max by (region, partition) (
+                oracache_raft_commit_index and oracache_raft_leader_at_max_term
+              )
+              and (count by (region, partition) (oracache_raft_leader_at_max_term) == 1)
+            )
+            - on (region, partition) group_right()
+            (
+              oracache_raft_applied_index
+              and (oracache_raft_is_follower == 1)
+              and on (job, instance) (up{job="storage-node"} == 1)
+            ),
+            0
+          )
+      - record: oracache_raft_replica_state
+        expr: |
+          max by (region, partition, node_id) (
+            (
+              2 * (
+                oracache_raft_leader_at_max_term
+                and on (region, partition)
+                  (count by (region, partition) (oracache_raft_leader_at_max_term) == 1)
+              )
+              or (oracache_raft_is_follower == 1)
+              or (0 * oracache_raft_is_leader)
+            )
+            and on (job, instance) (up{job="storage-node"} == 1)
+          )
+          or (-1 * max by (region, partition, node_id) (present_over_time(oracache_raft_term[5m])))

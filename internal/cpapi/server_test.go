@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -94,7 +95,7 @@ func TestHeartbeatAgeMetrics(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("metrics status = %d, body = %s", recorder.Code, recorder.Body)
 		}
-		var parser expfmt.TextParser
+		parser := expfmt.NewTextParser(model.LegacyValidation)
 		families, err := parser.TextToMetricFamilies(recorder.Body)
 		if err != nil {
 			t.Fatalf("parse metrics: %v", err)
@@ -623,5 +624,30 @@ func TestGRPCContractOverBufconn(t *testing.T) {
 	}
 	if resp.GetRevision() != 1 || resp.GetConfig() == nil {
 		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestCPRPCDurationsIncludeRejectedCalls(t *testing.T) {
+	t.Parallel()
+	srv := cpapi.New(statestore.NewMemory())
+	_, _ = srv.ReportHeartbeat(t.Context(), nil)
+	_, _ = srv.GetConfig(t.Context(), nil)
+	recorder := httptest.NewRecorder()
+	srv.Metrics().Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	parser := expfmt.NewTextParser(model.LegacyValidation)
+	families, err := parser.TextToMetricFamilies(recorder.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"report_heartbeat": true, "get_config": true}
+	for _, metric := range families["oracache_cp_rpc_duration_seconds"].GetMetric() {
+		for _, label := range metric.GetLabel() {
+			if label.GetName() == "operation" && metric.GetHistogram().GetSampleCount() == 1 {
+				delete(want, label.GetValue())
+			}
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing CP histogram samples: %v", want)
 	}
 }
