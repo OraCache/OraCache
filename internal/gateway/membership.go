@@ -36,7 +36,11 @@ func (f *MembershipForwarder) call(ctx context.Context, group, region string, pa
 			continue
 		}
 		seen[address] = true
-		conn, dialErr := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDisableRetry())
+		// Peer addresses come from the routing map. Skip gRPC service config TXT lookups.
+		conn, dialErr := grpc.NewClient(address,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDisableServiceConfig(),
+			grpc.WithDisableRetry())
 		if dialErr != nil {
 			return nil, status.Error(codes.Unavailable, dialErr.Error())
 		}
