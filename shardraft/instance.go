@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OraCache/oracache/internal/profiling"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 	"google.golang.org/grpc/codes"
@@ -23,13 +24,15 @@ type result struct {
 	err     error
 }
 type request struct {
-	ctx   context.Context
-	op    operation
-	data  []byte
-	reply chan result
+	enqueued time.Time
+	ctx      context.Context
+	op       operation
+	data     []byte
+	reply    chan result
 }
 type pendingRequest struct {
 	request
+	submitted time.Time
 	readIndex uint64
 	readReady bool
 }
@@ -267,6 +270,7 @@ func (n *Instance) sendLoop(ctx context.Context, peer uint64, queue <-chan outgo
 }
 
 func (n *Instance) accept(r request) {
+	profiling.Handoff.End(r.enqueued)
 	if err := r.ctx.Err(); err != nil {
 		r.reply <- result{err: status.FromContextError(err).Err()}
 		return
@@ -303,10 +307,20 @@ func (n *Instance) accept(r request) {
 	var id requestID
 	binary.BigEndian.PutUint64(id[:8], n.cfg.PeerID)
 	binary.BigEndian.PutUint64(id[8:], n.sequence)
-	n.pending[id] = &pendingRequest{request: r}
+	p := &pendingRequest{request: r}
+	n.pending[id] = p
 	if read {
+		p.submitted = profiling.Start()
 		n.raw.ReadIndex(id[:])
-	} else if err := n.raw.Propose(encodeCommand(r.op, id, r.data)); err != nil {
+	} else {
+		data := encodeCommand(r.op, id, r.data)
+		start := profiling.Start()
+		err := n.raw.Propose(data)
+		profiling.Propose.End(start)
+		p.submitted = profiling.Start()
+		if err == nil {
+			return
+		}
 		delete(n.pending, id)
 		r.reply <- result{err: status.Error(codes.ResourceExhausted, "Raft rejected proposal")}
 	}
@@ -326,6 +340,7 @@ func (n *Instance) completeReads() {
 		if !p.readReady || p.readIndex > n.applied {
 			continue
 		}
+		profiling.ReadBarrier.End(p.submitted)
 		message, err := decodeRequest(p.op, p.data)
 		var response proto.Message
 		if err == nil {
@@ -397,6 +412,11 @@ func (n *Instance) processReady() error {
 					if err != nil {
 						return err
 					}
+					p := n.pending[id]
+					if p != nil {
+						profiling.Commit.End(p.submitted)
+					}
+					apply := profiling.Start()
 					message, err := decodeRequest(op, payload)
 					if err != nil {
 						return fmt.Errorf("decode committed request: %w", err)
@@ -405,7 +425,8 @@ func (n *Instance) processReady() error {
 					if !expectedApplicationError(err) {
 						return fmt.Errorf("apply entry %d: %w", entry.Index, err)
 					}
-					if p, ok := n.pending[id]; ok {
+					profiling.Apply.End(apply)
+					if p != nil {
 						p.reply <- result{message: response, err: err}
 						delete(n.pending, id)
 					}
@@ -427,7 +448,9 @@ func (n *Instance) processReady() error {
 		}
 		n.raw.Advance(rd)
 		if n.applied-n.snapshotIndex >= n.cfg.SnapshotEntries {
+			start := profiling.Start()
 			data, err := n.cache.Checkpoint()
+			profiling.Checkpoint.End(start)
 			if err != nil {
 				return fmt.Errorf("checkpoint: %w", err)
 			}

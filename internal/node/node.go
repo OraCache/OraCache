@@ -25,6 +25,7 @@ import (
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/cpagent"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/profiling"
 	"github.com/OraCache/oracache/internal/store"
 	"github.com/OraCache/oracache/shardraft"
 	"go.etcd.io/raft/v3"
@@ -175,9 +176,9 @@ func New(cfg Config) (*Node, error) {
 		_ = json.NewEncoder(w).Encode(n.inst.Status())
 	})
 	n.httpSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	serverOptions := []grpc.ServerOption{grpc.MaxRecvMsgSize(16 << 20)}
+	serverOptions := profiling.Options(grpc.MaxRecvMsgSize(16 << 20))
 	if n.agent != nil {
-		serverOptions = append(serverOptions, grpc.UnaryInterceptor(n.requireMasterForWrites))
+		serverOptions = append(serverOptions, grpc.ChainUnaryInterceptor(n.requireMasterForWrites))
 	}
 	n.grpcSrv = grpc.NewServer(serverOptions...)
 	pb.RegisterCacheGatewayServer(n.grpcSrv, shardraft.GatewayServer(n.inst))

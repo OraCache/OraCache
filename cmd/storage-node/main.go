@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/OraCache/oracache/internal/node"
+	"github.com/OraCache/oracache/internal/profiling"
 	"github.com/OraCache/oracache/shardraft"
 )
 
@@ -57,6 +58,12 @@ func main() {
 	flag.IntVar(&cfg.ElectionTicks, "election-ticks", 0, "Raft election ticks (0: default 10)")
 	flag.Uint64Var(&cfg.SnapshotEntries, "snapshot-entries", 0, "applied entries between snapshots (0: default)")
 	flag.Parse()
+	stopProfiles, err := profiling.Listen()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	defer stopProfiles()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
 		os.Exit(2)

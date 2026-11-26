@@ -1,0 +1,7 @@
+{
+  "revision": 1,
+  "partition_count": 1,
+  "regions": [{"id": "region-a", "role": "master"}],
+  "nodes": [{"id": "node-1", "region": "region-a", "address": "127.0.0.1:28791"}],
+  "partitions": [{"partition_id": 0, "region": "region-a", "leader_node_id": "node-1", "replica_node_ids": ["node-1"]}]
+}

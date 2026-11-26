@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	"github.com/OraCache/oracache/internal/profiling"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -30,6 +31,7 @@ const maxBatch = 1000
 type requestID [16]byte
 
 func encodeCommand(op operation, id requestID, data []byte) []byte {
+	defer profiling.Command.End(profiling.Start())
 	out := make([]byte, commandHeader+len(data))
 	out[0], out[1] = 1, byte(op)
 	copy(out[2:commandHeader], id[:])
@@ -54,6 +56,7 @@ func decodeCommand(data []byte) (operation, requestID, []byte, error) {
 }
 
 func decodeRequest(op operation, data []byte) (proto.Message, error) {
+	defer profiling.RequestDecode.End(profiling.Start())
 	var message proto.Message
 	switch op {
 	case opGet:
@@ -123,6 +126,7 @@ func validateRequest(message proto.Message) error {
 // Returned status errors must be deterministic application outcomes. Unexpected
 // backend failures stop the instance rather than silently skipping a command.
 func (n *Instance) execute(message proto.Message) (response proto.Message, err error) {
+	defer profiling.Execute.End(profiling.Start())
 	defer func() {
 		if err == nil && (response == nil || !response.ProtoReflect().IsValid()) {
 			response, err = nil, fmt.Errorf("cache returned a nil response without an error")

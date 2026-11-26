@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OraCache/oracache/internal/profiling"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -42,6 +43,12 @@ func main() {
 		statusListen = flag.String("status-listen", defaultStatusListen, `HTTP address for /routes and /healthz ("none" disables)`)
 	)
 	flag.Parse()
+	stopProfiles, err := profiling.Listen()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	defer stopProfiles()
 	if *region == "" || *nodeID == "" {
 		fmt.Fprintln(os.Stderr, "-region and -node-id are required")
 		os.Exit(2)
@@ -118,7 +125,7 @@ func main() {
 
 func serveGateway(listener net.Listener, poller *gateway.Poller, logger *slog.Logger) (<-chan error, func()) {
 	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh}
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
+	server := grpc.NewServer(profiling.Options(grpc.MaxRecvMsgSize(16 << 20))...)
 	gatewayv1.RegisterCacheGatewayServer(server, forwarder)
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()

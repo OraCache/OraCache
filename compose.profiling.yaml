@@ -1,0 +1,45 @@
+name: oracache-profiling
+
+x-server: &server
+  image: oracache-profiling:local
+  pull_policy: never
+
+# The lab shares a private network namespace. Only client and route-status
+# ports are forwarded. The probe in cp-api reaches pprof on container loopback.
+services:
+  cp-api:
+    <<: *server
+    build:
+      context: ./bin/profiling/linux
+      dockerfile_inline: |
+        FROM scratch
+        COPY . /
+        USER 65532:65532
+    command: [/cp-api, --listen=127.0.0.1:28781, --metrics-listen=none, --config=/one-node.json]
+    volumes:
+      - ./scripts/profiling/one-node.json:/one-node.json:ro
+    ports:
+      - "127.0.0.1:28791:28791"
+      - "127.0.0.1:28780:28780"
+      - "127.0.0.1:28766:28766"
+  node-1:
+    <<: *server
+    network_mode: service:cp-api
+    environment:
+      ORACACHE_PPROF_ADDR: ${PROFILE_NODE_ADDR:-}
+    command:
+      - /storage-node
+      - --node-id=node-1
+      - --peer-id=1
+      - --peer=1,node-1,127.0.0.1:28791,http://127.0.0.1:28891/raft
+      - --grpc-listen=0.0.0.0:28791
+      - --raft-listen=127.0.0.1:28891
+      - --cp-addr=127.0.0.1:28781
+      - --heartbeat-interval=500ms
+      - --read-mode=linearizable
+  api-gateway:
+    <<: *server
+    network_mode: service:cp-api
+    environment:
+      ORACACHE_PPROF_ADDR: ${PROFILE_GATEWAY_ADDR:-}
+    command: [/api-gateway, --region=region-a, --node-id=gw, --listen=0.0.0.0:28780, --cp-addr=127.0.0.1:28781, --status-listen=0.0.0.0:28766, --poll-interval=500ms]

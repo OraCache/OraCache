@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"sync"
+
+	"github.com/OraCache/oracache/internal/profiling"
 )
 
 const (
@@ -133,7 +135,10 @@ func (s *Store) Get(key string, rev uint64) GetResult {
 // Peek is Get without the LRU promotion. Replicated state machines use it so
 // that reads, which are served by one replica only, never change eviction order.
 func (s *Store) Peek(key string, rev uint64) GetResult {
+	start := profiling.Start()
 	s.mu.Lock()
+	profiling.StoreLock.End(start)
+	defer profiling.StoreBody.End(profiling.Start())
 	defer s.mu.Unlock()
 	return s.lookup(key, rev, false)
 }
@@ -163,7 +168,10 @@ func (s *Store) Put(key string, data []byte, expectedRev *uint64) (PutResult, er
 		return PutResult{Status: PutTooLarge}, nil
 	}
 
+	start := profiling.Start()
 	s.mu.Lock()
+	profiling.StoreLock.End(start)
+	defer profiling.StoreBody.End(profiling.Start())
 	defer s.mu.Unlock()
 
 	e := s.entries[key]
@@ -179,6 +187,7 @@ func (s *Store) Put(key string, data []byte, expectedRev *uint64) (PutResult, er
 	}
 	s.seq++
 	rev := s.seq
+	lruStart := profiling.Start()
 
 	if e == nil {
 		e = &entry{key: key}
@@ -187,12 +196,15 @@ func (s *Store) Put(key string, data []byte, expectedRev *uint64) (PutResult, er
 	} else {
 		s.lru.MoveToFront(e.elem)
 	}
+	profiling.LRU.End(lruStart)
 	e.versions = append(e.versions, Version{Rev: rev, Data: clone(data)})
+	retention := profiling.Start()
 	if extra := len(e.versions) - s.cfg.MaxVersions; extra > 0 {
 		e.versions = append([]Version(nil), e.versions[extra:]...)
 	}
 	s.resize(e)
 	s.evict(e)
+	profiling.Retention.End(retention)
 	return PutResult{Status: PutOK, Rev: rev}, nil
 }
 
@@ -255,4 +267,7 @@ func (s *Store) evict(keep *entry) {
 	}
 }
 
-func clone(b []byte) []byte { return append([]byte(nil), b...) }
+func clone(b []byte) []byte {
+	defer profiling.Clone.End(profiling.Start())
+	return append([]byte(nil), b...)
+}

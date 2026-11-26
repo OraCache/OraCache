@@ -4,6 +4,7 @@ import (
 	"context"
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	"github.com/OraCache/oracache/internal/profiling"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -18,6 +19,7 @@ func (n *Instance) call(ctx context.Context, op operation, message proto.Message
 	if len(opts) != 0 {
 		return nil, status.Error(codes.InvalidArgument, "gRPC call options require a network CacheGatewayClient")
 	}
+	prepare := profiling.Start()
 	if err := validateRequest(message); err != nil {
 		return nil, err
 	}
@@ -28,12 +30,13 @@ func (n *Instance) call(ctx context.Context, op operation, message proto.Message
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	profiling.Prepare.End(prepare)
 	ctx, cancel := context.WithTimeout(ctx, n.cfg.RequestTimeout)
 	defer cancel()
 	if !n.Status().Running {
 		return nil, unavailable("instance is not running")
 	}
-	r := request{ctx: ctx, op: op, data: data, reply: make(chan result, 1)}
+	r := request{enqueued: profiling.Start(), ctx: ctx, op: op, data: data, reply: make(chan result, 1)}
 	select {
 	case n.requests <- r:
 	case <-ctx.Done():

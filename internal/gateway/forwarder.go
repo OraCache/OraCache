@@ -10,6 +10,7 @@ import (
 	"time"
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	"github.com/OraCache/oracache/internal/profiling"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -116,6 +117,7 @@ func notLeaderHint(err error) (addr string, term uint64, ok bool) {
 // a non-retryable error or the bounds are exhausted. call receives the node
 // address that served it.
 func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, call func(context.Context, pb.CacheGatewayClient, string) error) error {
+	routeStart := profiling.Start()
 	route, token, err := f.Router.forwardingRoute(partition, write)
 	if err != nil {
 		return status.Error(codes.Unavailable, err.Error())
@@ -143,6 +145,7 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 	for _, r := range route.replicas {
 		add(r.Address)
 	}
+	profiling.Route.End(routeStart)
 	if len(order) == 0 {
 		return status.Error(codes.Unavailable, "partition has no replicas")
 	}
@@ -264,7 +267,10 @@ func (f *Forwarder) Get(ctx context.Context, r *pb.GetRequest) (*pb.GetResponse,
 	}
 	var out *pb.GetResponse
 	err = f.forward(ctx, p, false, func(ctx context.Context, c pb.CacheGatewayClient, addr string) (err error) {
-		if out, err = c.Get(ctx, r); err == nil && out.ServedBy == nil {
+		start := profiling.Start()
+		out, err = c.Get(ctx, r)
+		profiling.Upstream.End(start)
+		if err == nil && out.ServedBy == nil {
 			out.ServedBy = f.served(addr, false, p)
 		}
 		return err
@@ -279,7 +285,10 @@ func (f *Forwarder) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse,
 	}
 	var out *pb.PutResponse
 	err = f.forward(ctx, p, true, func(ctx context.Context, c pb.CacheGatewayClient, addr string) (err error) {
-		if out, err = c.Put(ctx, r); err == nil && out.ServedBy == nil {
+		start := profiling.Start()
+		out, err = c.Put(ctx, r)
+		profiling.Upstream.End(start)
+		if err == nil && out.ServedBy == nil {
 			out.ServedBy = f.served(addr, true, p)
 		}
 		return err

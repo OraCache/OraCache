@@ -13,3 +13,9 @@
 
 # Локальные архитектурные доки и AI-заметки
 /docs/architecture/
+
+/get.csv
+/put.csv
+/manual-results/
+/oracache-bench
+.DS_Store
