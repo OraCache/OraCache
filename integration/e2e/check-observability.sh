@@ -6,7 +6,13 @@ cd "$(dirname "$0")/../.."
 run="oracache-obs-$(date +%s)-$$"
 project="$run"
 network=
-tmp=$(mktemp -d)
+# Colima can bind-mount fixtures from the repository on macOS.
+mkdir -p .reports
+tmp=$(mktemp -d "$PWD/.reports/cp-observability.XXXXXXXX")
+export ORACACHE_PROMETHEUS_TARGETS_DIR="$tmp/targets"
+mkdir "$ORACACHE_PROMETHEUS_TARGETS_DIR"
+targets="$ORACACHE_PROMETHEUS_TARGETS_DIR/storage-nodes.yml"
+cp configs/monitoring/targets/storage-nodes.yml "$targets"
 compose_files=(-f compose.cp.yaml -f compose.cp-observability.yaml)
 paused=()
 export ORACACHE_CP_PORT=0 ORACACHE_CP_STATUS_PORT=0 ORACACHE_PROMETHEUS_PORT=0 ORACACHE_GRAFANA_PORT=0
@@ -122,6 +128,13 @@ YAML
 }
 
 start leader-failover
+sed '/node-3:28191/d' "$targets" > "$targets.next"
+mv "$targets.next" "$targets"
+await_query 'up{job="storage-node",instance="node-3:28191"}' 'length == 0' >/dev/null
+cp configs/monitoring/targets/storage-nodes.yml "$targets.next"
+mv "$targets.next" "$targets"
+await_query 'up{job="storage-node",instance="node-3:28191"}' '.[0].value == "1"' >/dev/null
+await_query 'oracache_raft_term{job="storage-node",node_id="node-3"}' 'length == 1' >/dev/null
 hit_rate_query=$(jq -er '.panels[] | select(.id == 16 and .fieldConfig.defaults.unit == "percentunit") | .targets[0].expr' \
   configs/monitoring/grafana/dashboards/oracache-real.json)
 await_query 'min(count_over_time(oracache_cache_rpc_total{operation="get",grpc_code="OK",outcome="hit"}[1m]))' \
@@ -229,10 +242,14 @@ if result=$(rpc put majority:key during 2>&1); then
   exit 1
 fi
 printf 'PUT with 3s deadline => %s\n' "$result"
-if [[ "$result" != *"code = DeadlineExceeded"* && "$result" != *"code = Unavailable"* ]]; then
-  printf 'Expected DeadlineExceeded or Unavailable from the client\n' >&2
-  exit 1
-fi
+# A timed-out stream can surface the HTTP/2 reset before gRPC reports the deadline.
+case "$result" in
+  *"code = DeadlineExceeded"*|*"code = Unavailable"*|*"code = Canceled desc = stream terminated by RST_STREAM with error code: CANCEL"*) ;;
+  *)
+    printf 'Expected an unavailable or timed-out write from the client\n' >&2
+    exit 1
+    ;;
+esac
 await_query 'sum(up{job="storage-node"})' '.[0].value == "1"' >/dev/null
 await_query "$cp_up" '.[0].value == "1"' >/dev/null
 await_query "$last_ok" ".[0].value | tonumber > $before" >/dev/null

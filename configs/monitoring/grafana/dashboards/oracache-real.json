@@ -48,7 +48,7 @@
       "id": 2,
       "type": "stat",
       "title": "Цели сбора",
-      "description": "Доступность HTTP scrape по каждой из пяти целей.",
+      "description": "Доступность HTTP scrape по каждой обнаруженной цели.",
       "gridPos": {"x":0,"y":1,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"none","noValue":"Нет данных","mappings":[{"type":"value","options":{"0":{"text":"Недоступен","color":"red"},"1":{"text":"Доступен","color":"green"}}}]},"overrides":[]},

@@ -7,6 +7,7 @@ services:
     volumes:
       - ./configs/monitoring/prometheus-real.yml:/etc/prometheus/prometheus.yml:ro
       - ./configs/monitoring/raft-rules.yml:/etc/prometheus/raft-rules.yml:ro
+      - ${ORACACHE_PROMETHEUS_TARGETS_DIR:-./configs/monitoring/targets}:/etc/prometheus/targets:ro
 
   grafana:
     extends:

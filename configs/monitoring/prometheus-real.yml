@@ -14,5 +14,6 @@ scrape_configs:
     static_configs:
       - targets: ["api-gateway:9466"]
   - job_name: storage-node
-    static_configs:
-      - targets: ["node-1:28191", "node-2:28191", "node-3:28191"]
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/storage-nodes.yml"]
+        refresh_interval: 5s

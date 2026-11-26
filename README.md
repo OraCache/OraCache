@@ -136,6 +136,13 @@ curl -fsS "http://127.0.0.1:${ORACACHE_CP_STATUS_PORT}/routes"
 - [Дашборд реального кластера](http://127.0.0.1:3000/d/oracache-real-cluster)
 - [Цели сбора Prometheus](http://127.0.0.1:9090/targets)
 
+Для опроса новой Storage Node добавьте её HTTP-адрес в `configs/monitoring/targets/storage-nodes.yml`.
+Prometheus перечитывает этот список сам. Для отдельного стенда укажите
+`ORACACHE_PROMETHEUS_TARGETS_DIR` и положите в этот каталог свой `storage-nodes.yml`.
+Цель появится на странице Prometheus сразу после обнаружения, а реплика в
+матрице Grafana — после первого сбора её метрик Raft. Список целей мониторинга
+отдельный от состава Raft и карты маршрутов Gateway.
+
 Скрипт повторяет чистый запуск и три отказных сценария на отдельных проектах
 со свободными портами. Он требует Docker Compose, Go, `curl` и `jq`, выполняет
 RPC с дедлайном 3 с и выводит ответы и значения метрик для отчёта.
