@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package membership.v1;
+
+option go_package = "github.com/OraCache/oracache/gen/membership/v1;membershipv1";
+
+service MembershipAdmin {
+  rpc ChangeMembership(ChangeMembershipRequest) returns (ChangeMembershipResponse);
+  rpc GetMembership(GetMembershipRequest) returns (Membership);
+}
+
+message Peer {
+  uint64 id = 1;
+  string node_id = 2;
+  string address = 3;
+  string raft_address = 4;
+}
+
+message Member {
+  Peer peer = 1;
+  bool voter = 2;
+  bool learner = 3;
+  bool outgoing_voter = 4;
+}
+
+message Membership {
+  string group_id = 1;
+  uint64 leader_id = 2;
+  uint64 term = 3;
+  uint64 index = 4;
+  bool joint = 5;
+  repeated Member members = 6;
+  repeated uint64 removed_ids = 7;
+}
+
+message ChangeMembershipRequest {
+  string group_id = 1;
+  string region = 2;
+  uint32 partition_id = 3;
+  string operation_id = 4;
+  string action = 5;
+  Peer peer = 6;
+  uint64 peer_id = 7;
+  uint64 remove_id = 8;
+}
+
+message ChangeMembershipResponse {
+  string operation_id = 1;
+  uint64 change_index = 2;
+  Membership membership = 3;
+}
+
+message GetMembershipRequest {
+  string group_id = 1;
+  string region = 2;
+  uint32 partition_id = 3;
+}

@@ -79,7 +79,7 @@ generate: $(PROTOC_ARCHIVE)
 	PATH="$(CURDIR)/.tools/bin:$$PATH" .tools/protoc/bin/protoc -I proto -I .tools/protoc/include \
 		--go_out=. --go_opt=module=github.com/OraCache/oracache \
 		--go-grpc_out=. --go-grpc_opt=module=github.com/OraCache/oracache \
-		proto/cache/gateway.proto proto/controlplane/v1/controlplane.proto
+		proto/cache/gateway.proto proto/cache/membership.proto proto/controlplane/v1/controlplane.proto
 
 test-e2e:
 	mkdir -p $(REPORTS)

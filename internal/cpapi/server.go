@@ -211,7 +211,7 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
-		heartbeat.Partitions = append(heartbeat.Partitions, statestore.PartitionStatus{
+		ps := statestore.PartitionStatus{
 			PartitionID:  p.GetPartitionId(),
 			Role:         role,
 			Term:         p.GetTerm(),
@@ -220,11 +220,25 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 			LeaderID:     p.GetLeaderId(),
 			Ready:        p.GetReady(),
 			LastError:    p.GetLastError(),
-		})
+		}
+		if wire := p.GetMembership(); wire != nil {
+			m := &cpconfig.GroupMembership{GroupID: wire.GetGroupId(), Region: wire.GetRegion(), PartitionID: wire.GetPartitionId(), ReporterID: wire.GetReporterPeerId(), Index: wire.GetConfigIndex(), Joint: wire.GetJoint(), RemovedIDs: append([]uint64(nil), wire.GetRemovedIds()...)}
+			for _, peer := range wire.GetMembers() {
+				if peer == nil {
+					return nil, status.Error(codes.InvalidArgument, "nil membership peer")
+				}
+				m.Members = append(m.Members, cpconfig.GroupMember{PeerID: peer.GetPeerId(), NodeID: peer.GetNodeId(), Address: peer.GetAddress(), RaftAddress: peer.GetRaftAddress(), Voter: peer.GetVoter(), Learner: peer.GetLearner(), OutgoingVoter: peer.GetOutgoingVoter()})
+			}
+			ps.Membership = m
+		}
+		heartbeat.Partitions = append(heartbeat.Partitions, ps)
 	}
 
 	revision, err := s.store.UpsertHeartbeat(ctx, heartbeat)
 	if err != nil {
+		if errors.Is(err, statestore.ErrMembershipConflict) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 		if errors.Is(err, statestore.ErrInvalidHeartbeat) {
 			s.metrics.Heartbeat(cpmetrics.HeartbeatInvalid)
 			return nil, status.Error(codes.InvalidArgument, "invalid heartbeat")

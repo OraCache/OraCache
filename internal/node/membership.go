@@ -18,8 +18,7 @@ const MaxStoreBytes int64 = 8 << 20
 
 func (n *Node) Membership() shardraft.Membership { return n.inst.Membership() }
 
-// These application entry points retain the same placement guard as the HTTP
-// API. Do not bypass it by calling the underlying Instance directly.
+// These application entry points use the same validation as the HTTP and gRPC APIs.
 func (n *Node) AddLearner(ctx context.Context, operationID string, peer shardraft.Peer) (*shardraft.MembershipResult, error) {
 	return n.ChangeMembership(ctx, shardraft.MembershipChange{OperationID: operationID, Action: "add-learner", Peer: peer})
 }
@@ -33,15 +32,11 @@ func (n *Node) RemoveNode(ctx context.Context, operationID string, peerID uint64
 }
 
 // Replace promotes an existing caught-up learner and removes the old voter.
-// It retains the application's placement guard, just like the HTTP endpoint.
 func (n *Node) Replace(ctx context.Context, operationID string, oldPeerID, learnerID uint64) (*shardraft.MembershipResult, error) {
 	return n.ChangeMembership(ctx, shardraft.MembershipChange{OperationID: operationID, Action: "replace", PeerID: learnerID, RemoveID: oldPeerID})
 }
 
 func (n *Node) ChangeMembership(ctx context.Context, c shardraft.MembershipChange) (*shardraft.MembershipResult, error) {
-	if n.agent != nil {
-		return nil, status.Error(codes.FailedPrecondition, "dynamic membership currently requires standalone mode (no cp-addr); CP reconciliation is a separate feature")
-	}
 	if c.Action == "add-learner" && (c.Peer.NodeID == "" || c.Peer.Address == "" || c.Peer.RaftAddress == "") {
 		return nil, status.Error(codes.InvalidArgument, "peer needs node_id, address and raft_address")
 	}

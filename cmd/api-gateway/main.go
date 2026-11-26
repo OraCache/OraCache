@@ -27,6 +27,7 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	gatewayv1 "github.com/OraCache/oracache/gen/gateway/v1"
+	membershipv1 "github.com/OraCache/oracache/gen/membership/v1"
 	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/gateway"
 )
@@ -56,7 +57,9 @@ func main() {
 		logger.Error("create router", "region", *region, "error", err)
 		os.Exit(1)
 	}
-	conn, err := grpc.NewClient(*cpAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(*cpAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDisableServiceConfig())
 	if err != nil {
 		logger.Error("dial cp", "address", *cpAddr, "error", err)
 		os.Exit(1)
@@ -125,6 +128,7 @@ func serveGateway(listener net.Listener, poller *gateway.Poller, metrics *cpmetr
 	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh, Metrics: poller.Metrics}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.UnaryInterceptor(cpmetrics.CacheRPCInterceptor(metrics.Prometheus())))
 	gatewayv1.RegisterCacheGatewayServer(server, forwarder)
+	membershipv1.RegisterMembershipAdminServer(server, &gateway.MembershipForwarder{Router: poller.Router})
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	return done, func() {

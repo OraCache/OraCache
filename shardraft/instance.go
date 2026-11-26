@@ -48,28 +48,33 @@ type delivery struct {
 	err      error
 }
 
+type heartbeatSnapshot struct {
+	status     Status
+	membership Membership
+}
+
 // Instance owns one peer and one cache. All Raft and cache calls are serialized
 // by Run. An Instance is single-use: restarting without term/vote is unsafe.
 type Instance struct {
-	cfg        Config
-	cache      StateMachine
-	transport  Transport
-	raw        *raft.RawNode
-	storage    *raft.MemoryStorage
-	peers      map[uint64]Peer
-	requests   chan request
-	incoming   chan raftpb.Message
-	deliveries chan delivery
-	outbound   map[uint64]chan outgoing
-	stop       chan struct{}
-	done       chan struct{}
-	mu         sync.Mutex
-	lifecycle  int // 0 constructed, 1 running, 2 stopped
-	stopOnce   sync.Once
-	observed   atomic.Pointer[Status]
-	heartbeat  atomic.Pointer[Status]
-	membership atomic.Value
-	known      atomic.Value // immutable map used by concurrent Step calls
+	cfg              Config
+	cache            StateMachine
+	transport        Transport
+	raw              *raft.RawNode
+	storage          *raft.MemoryStorage
+	peers            map[uint64]Peer
+	requests         chan request
+	incoming         chan raftpb.Message
+	deliveries       chan delivery
+	outbound         map[uint64]chan outgoing
+	stop             chan struct{}
+	done             chan struct{}
+	mu               sync.Mutex
+	lifecycle        int // 0 constructed, 1 running, 2 stopped
+	stopOnce         sync.Once
+	observed         atomic.Pointer[Status]
+	heartbeat        atomic.Pointer[heartbeatSnapshot]
+	membershipEvents chan struct{}
+	known            atomic.Value // immutable map used by concurrent Step calls
 	// Fields below belong exclusively to Run.
 	pending       map[requestID]*pendingRequest
 	sequence      uint64
@@ -116,6 +121,7 @@ func NewInstance(cfg Config, cache StateMachine, transport Transport) (*Instance
 		outbound: make(map[uint64]chan outgoing), stop: make(chan struct{}), done: make(chan struct{}),
 		pending: make(map[requestID]*pendingRequest),
 		removed: make(map[uint64]bool), operations: make(map[string]membershipRecord),
+		membershipEvents: make(chan struct{}, 1),
 	}
 	initial := make([]raft.Peer, 0, len(cfg.Peers))
 	for _, p := range cfg.Peers {
@@ -152,7 +158,13 @@ func (n *Instance) Status() Status { return *n.observed.Load() }
 
 // HeartbeatStatus returns the snapshot from the end of a Raft owner iteration.
 // It preserves the readiness observation used by Control Plane routing.
-func (n *Instance) HeartbeatStatus() Status { return *n.heartbeat.Load() }
+func (n *Instance) HeartbeatStatus() Status { return n.heartbeat.Load().status }
+
+// HeartbeatState returns the status and membership from the same owner iteration.
+func (n *Instance) HeartbeatState() (Status, Membership) {
+	snapshot := n.heartbeat.Load()
+	return snapshot.status, snapshot.membership.clone()
+}
 
 func (n *Instance) snapshot(running bool, lastError string) *Status {
 	s := n.raw.BasicStatus()
@@ -167,16 +179,31 @@ func (n *Instance) snapshot(running bool, lastError string) *Status {
 }
 
 func (n *Instance) publish(running bool, lastError string) {
-	s := n.snapshot(running, lastError)
-	n.observed.Store(s)
-	n.heartbeat.Store(s)
-	// Membership is immutable between configuration/leadership changes; avoid
-	// rebuilding and sorting it on every ordinary Raft message and cache call.
-	previous, exists := n.membership.Load().(Membership)
-	if !exists || previous.Index != n.configIndex || previous.Term != s.Term || previous.LeaderID != s.LeaderID {
-		n.membership.Store(n.membershipView())
+	next := &heartbeatSnapshot{status: *n.snapshot(running, lastError)}
+	previous := n.heartbeat.Load()
+	if previous != nil {
+		next.membership = previous.membership
+	}
+	// Reuse membership between configuration or leadership changes.
+	m := next.membership
+	changed := previous == nil || m.Index != n.configIndex || m.Term != next.status.Term || m.LeaderID != next.status.LeaderID
+	if changed {
+		next.membership = n.membershipView()
+	}
+	n.heartbeat.Store(next)
+	n.observed.Store(&next.status)
+	if changed && next.status.Role == raft.StateLeader.String() && n.configIndex != 0 &&
+		(previous == nil || m.Index != n.configIndex || m.LeaderID != n.cfg.PeerID) {
+		select {
+		case n.membershipEvents <- struct{}{}:
+		default:
+		}
 	}
 }
+
+// MembershipEvents signals an applied configuration or a newly elected leader.
+// The receiver reads Membership for the latest complete snapshot.
+func (n *Instance) MembershipEvents() <-chan struct{} { return n.membershipEvents }
 
 // Run blocks until ctx is cancelled, Close is called or a fatal apply error occurs.
 // It must be called once. All send workers are joined before Run returns.

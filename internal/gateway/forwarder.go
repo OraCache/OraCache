@@ -71,6 +71,7 @@ func (f *Forwarder) client(addr string) (pb.CacheGatewayClient, error) {
 		return pb.NewCacheGatewayClient(c), nil
 	}
 	c, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDisableServiceConfig(),
 		grpc.WithDisableRetry(),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16<<20)))
 	if err != nil {

@@ -27,6 +27,22 @@ go run ./cmd/oracache delete demo:key     # DELETE_STATUS_DELETED
 go run ./cmd/oracache get demo:key        # GET_STATUS_MISS
 ```
 
+### Управление составом Raft
+
+Административный gRPC-сервис управления составом работает на том же адресе Gateway.
+Например, текущий состав группы стенда:
+
+```sh
+go run ./cmd/oracache membership get --group-id=region-a/shard-0/poc-1 --region=region-a --partition-id=0
+```
+
+Для добавления ноды запустите её с новым `peer-id` и `node-id`, прежним `group-id`
+и `--join`. Затем вызовите `membership add-learner` с её клиентским и Raft-адресом;
+после синхронизации — `membership promote` либо `membership replace`. Команды
+`membership remove` и `membership get` работают через тот же Gateway.
+Каждому изменению нужен уникальный `--operation-id`; при неизвестном результате
+повторяйте запрос с тем же ID и параметрами.
+
 ### Метрики Control Plane и Gateway
 
 Gateway отдаёт `oracache_gateway_partitions_without_route{operation}` на
@@ -247,7 +263,8 @@ docker compose -f compose.cp-monitoring.yaml down
 Добавление пустой реплики и замена потерявшей состояние ноды без перезапуска
 группы описаны в [документации модуля shardraft](docs/shardraft.md#динамический-состав-группы):
 схемы вызовов, `--join`, административный HTTP API и ручной пример без Docker.
-Пока это standalone-сценарий; автоматизация через CP выполняется отдельно.
+Тот же Raft-протокол используется и при работе с CP; административный путь
+через Gateway описан выше.
 Бюджет Store в `storage-node` ограничен 8 МиБ для безопасной передачи snapshot.
 
 ### Запустить кластер

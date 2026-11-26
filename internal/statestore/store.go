@@ -18,6 +18,7 @@ import (
 // ErrInvalidHeartbeat возвращается для некорректных heartbeat. CP API
 // отображает его в gRPC InvalidArgument.
 var ErrInvalidHeartbeat = errors.New("oracache/statestore: invalid heartbeat")
+var ErrMembershipConflict = errors.New("oracache/statestore: conflicting raft membership")
 
 // RaftRole — локальная роль partition-группы. Она никогда не является глобальной
 // ролью для всех регионов.
@@ -56,6 +57,7 @@ type PartitionStatus struct {
 	LeaderID     string
 	Ready        bool
 	LastError    string
+	Membership   *cpconfig.GroupMembership
 }
 
 // Resources — последний полученный snapshot ёмкости ноды.
@@ -128,6 +130,14 @@ type Store interface {
 // CloneHeartbeat возвращает глубокую копию для передачи между goroutine.
 func CloneHeartbeat(h Heartbeat) Heartbeat {
 	h.Partitions = append([]PartitionStatus(nil), h.Partitions...)
+	for i := range h.Partitions {
+		if m := h.Partitions[i].Membership; m != nil {
+			copyOf := *m
+			copyOf.Members = append([]cpconfig.GroupMember(nil), m.Members...)
+			copyOf.RemovedIDs = append([]uint64(nil), m.RemovedIDs...)
+			h.Partitions[i].Membership = &copyOf
+		}
+	}
 	return h
 }
 
