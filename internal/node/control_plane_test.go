@@ -19,11 +19,11 @@ type noControlPlaneIO struct {
 	controlplanev1.ControlPlaneAPIClient
 }
 
-func TestMembershipRequiresStandaloneUntilCPReconciliationExists(t *testing.T) {
+func TestMembershipCPModeStillValidatesPeer(t *testing.T) {
 	n := &Node{agent: &cpagent.Agent{}}
 	_, err := n.ChangeMembership(t.Context(), shardraft.MembershipChange{OperationID: "add", Action: "add-learner"})
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("CP placement bypassed: %v", err)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid peer accepted: %v", err)
 	}
 }
 

@@ -307,7 +307,7 @@ func (n *Instance) configurationChange(c MembershipChange) (raftpb.ConfChangeV2,
 			return cc, status.Error(codes.InvalidArgument, err.Error())
 		}
 		for id, peer := range n.peers {
-			if !n.removed[id] && ((c.Peer.RaftAddress != "" && peer.RaftAddress == c.Peer.RaftAddress) || (c.Peer.NodeID != "" && peer.NodeID == c.Peer.NodeID)) {
+			if !n.removed[id] && ((c.Peer.RaftAddress != "" && peer.RaftAddress == c.Peer.RaftAddress) || (c.Peer.Address != "" && peer.Address == c.Peer.Address) || (c.Peer.NodeID != "" && peer.NodeID == c.Peer.NodeID)) {
 				return bad("active peer already uses this address or node identity")
 			}
 		}

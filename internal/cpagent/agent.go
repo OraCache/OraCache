@@ -110,7 +110,8 @@ type Agent struct {
 	rpcTimeout          time.Duration
 	jitterFraction      float64
 
-	pullNow chan struct{}
+	pullNow      chan struct{}
+	heartbeatNow chan struct{}
 }
 
 // New проверяет options и создаёт агента. Он не выполняет I/O.
@@ -173,6 +174,7 @@ func New(opts Options) (*Agent, error) {
 		rpcTimeout:          opts.RPCTimeout,
 		jitterFraction:      jitterFraction,
 		pullNow:             make(chan struct{}, 1),
+		heartbeatNow:        make(chan struct{}, 1),
 	}, nil
 }
 
@@ -181,6 +183,14 @@ func (a *Agent) Config() *cpconfig.Config { return a.holder.Current() }
 
 // Revision возвращает текущую известную revision конфигурации или 0.
 func (a *Agent) Revision() uint64 { return a.holder.Revision() }
+
+// TriggerHeartbeat coalesces applied membership and leadership notifications.
+func (a *Agent) TriggerHeartbeat() {
+	select {
+	case a.heartbeatNow <- struct{}{}:
+	default:
+	}
+}
 
 // Run запускает циклы heartbeat и config pull и блокируется до отмены ctx.
 // Ошибки CP логируются и повторяются с backoff; они не останавливают Data Plane.
@@ -227,7 +237,7 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 		}
 		delay := backoffDelay(base, failures)
 		delay = jitterDelay(delay, a.jitterFraction, a.nodeID)
-		if !a.wait(ctx, delay) {
+		if !a.waitHeartbeat(ctx, delay) {
 			return
 		}
 	}
@@ -349,12 +359,14 @@ func (a *Agent) triggerPull() {
 	}
 }
 
-func (a *Agent) wait(ctx context.Context, delay time.Duration) bool {
+func (a *Agent) waitHeartbeat(ctx context.Context, delay time.Duration) bool {
 	timer := a.clock.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
+	case <-a.heartbeatNow:
+		return true
 	case <-timer.C():
 		return true
 	}

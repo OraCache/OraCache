@@ -39,9 +39,6 @@ func (n *Node) Replace(ctx context.Context, operationID string, oldPeerID, learn
 }
 
 func (n *Node) ChangeMembership(ctx context.Context, c shardraft.MembershipChange) (*shardraft.MembershipResult, error) {
-	if n.agent != nil {
-		return nil, status.Error(codes.FailedPrecondition, "dynamic membership currently requires standalone mode (no cp-addr); CP reconciliation is a separate feature")
-	}
 	if c.Action == "add-learner" && (c.Peer.NodeID == "" || c.Peer.Address == "" || c.Peer.RaftAddress == "") {
 		return nil, status.Error(codes.InvalidArgument, "peer needs node_id, address and raft_address")
 	}
