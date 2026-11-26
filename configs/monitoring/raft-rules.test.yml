@@ -34,6 +34,12 @@ tests:
         values: '8 9 11 13 14'
       - series: 'oracache_raft_applied_index{job="storage-node", instance="c", node_id="c", region="r", partition="0"}'
         values: '10 10 11 12 13'
+      - series: 'up{job="storage-node", instance="b1"}'
+        values: '1 1 1 1 1'
+      - series: 'oracache_raft_term{job="storage-node", instance="b1", node_id="b1", region="other", partition="0"}'
+        values: '1 1 1 1 1'
+      - series: 'oracache_raft_is_leader{job="storage-node", instance="b1", node_id="b1", region="other", partition="0"}'
+        values: '1 1 1 1 1'
     promql_expr_test:
       - expr: oracache_raft_follower_lag_entries
         eval_time: 0m
@@ -56,3 +62,47 @@ tests:
         exp_samples:
           - labels: 'oracache_raft_follower_lag_entries{job="storage-node", instance="b", node_id="b", region="r", partition="0"}'
             value: 0
+      - expr: oracache_raft_replica_state
+        eval_time: 0m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="a", region="r", partition="0"}'
+            value: 2
+          - labels: 'oracache_raft_replica_state{node_id="b", region="r", partition="0"}'
+            value: 1
+          - labels: 'oracache_raft_replica_state{node_id="c", region="r", partition="0"}'
+            value: 1
+          - labels: 'oracache_raft_replica_state{node_id="b1", region="other", partition="0"}'
+            value: 2
+      - expr: oracache_raft_replica_state
+        eval_time: 2m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="a", region="r", partition="0"}'
+            value: 0
+          - labels: 'oracache_raft_replica_state{node_id="b", region="r", partition="0"}'
+            value: 0
+          - labels: 'oracache_raft_replica_state{node_id="c", region="r", partition="0"}'
+            value: 1
+          - labels: 'oracache_raft_replica_state{node_id="b1", region="other", partition="0"}'
+            value: 2
+      - expr: oracache_raft_replica_state
+        eval_time: 3m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="a", region="r", partition="0"}'
+            value: -1
+          - labels: 'oracache_raft_replica_state{node_id="b", region="r", partition="0"}'
+            value: 0
+          - labels: 'oracache_raft_replica_state{node_id="c", region="r", partition="0"}'
+            value: 1
+          - labels: 'oracache_raft_replica_state{node_id="b1", region="other", partition="0"}'
+            value: 2
+      - expr: oracache_raft_replica_state
+        eval_time: 4m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="a", region="r", partition="0"}'
+            value: 2
+          - labels: 'oracache_raft_replica_state{node_id="b", region="r", partition="0"}'
+            value: 1
+          - labels: 'oracache_raft_replica_state{node_id="c", region="r", partition="0"}'
+            value: -1
+          - labels: 'oracache_raft_replica_state{node_id="b1", region="other", partition="0"}'
+            value: 2

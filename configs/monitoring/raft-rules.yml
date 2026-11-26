@@ -25,3 +25,18 @@ groups:
             ),
             0
           )
+      - record: oracache_raft_replica_state
+        expr: |
+          max by (region, partition, node_id) (
+            (
+              2 * (
+                oracache_raft_leader_at_max_term
+                and on (region, partition)
+                  (count by (region, partition) (oracache_raft_leader_at_max_term) == 1)
+              )
+              or (oracache_raft_is_follower == 1)
+              or (0 * oracache_raft_is_leader)
+            )
+            and on (job, instance) (up{job="storage-node"} == 1)
+          )
+          or (-1 * max by (region, partition, node_id) (present_over_time(oracache_raft_term[5m])))

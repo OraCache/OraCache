@@ -122,8 +122,15 @@ YAML
 }
 
 start leader-failover
+hit_rate_query=$(jq -er '.panels[] | select(.id == 16 and .fieldConfig.defaults.unit == "percentunit") | .targets[0].expr' \
+  configs/monitoring/grafana/dashboards/oracache-real.json)
+await_query 'min(count_over_time(oracache_cache_rpc_total{operation="get",grpc_code="OK",outcome="hit"}[1m]))' \
+  'length == 1 and (.[0].value | tonumber) >= 2' >/dev/null
+await_query "$hit_rate_query" 'length == 0' >/dev/null
+await_query 'oracache_raft_replica_state' 'length == 3 and (map(.value) | sort) == ["1","1","2"]' >/dev/null
 initial_index=$(await_query 'min(oracache_raft_commit_index)' 'length == 1' | jq '.[0].value | tonumber')
 expect_rpc '.status == "GET_STATUS_MISS"' get demo:key
+await_query "$hit_rate_query" 'length == 2 and all(.[]; (.value | tonumber) == 0)' >/dev/null
 seed=$(expect_rpc '.status == "PUT_STATUS_OK"' put demo:key hello --expected-rev=0)
 printf '%s\n' "$seed"
 rev=$(jq -er '.rev' <<<"$seed")
@@ -133,6 +140,7 @@ await_query 'oracache_storage_accounted_bytes' 'length == 3 and all(.[]; (.value
 expect_rpc '.status == "PUT_STATUS_CONFLICT"' put demo:key other --expected-rev=0
 expect_rpc '.status == "DELETE_STATUS_DELETED"' delete demo:key
 expect_rpc '.status == "GET_STATUS_MISS"' get demo:key
+await_query "$hit_rate_query" 'length == 2 and all(.[]; (.value | tonumber) > 0.32 and (.value | tonumber) < 0.34)' >/dev/null
 await_query 'oracache_cache_rpc_total{grpc_code="OK"} > 0' 'length == 10' >/dev/null
 await_query 'sum by (job,operation) (oracache_cache_rpc_duration_seconds_count) > 0' 'length == 6' >/dev/null
 await_query 'oracache_cp_rpc_duration_seconds_count > 0' 'length == 2' >/dev/null
@@ -148,9 +156,21 @@ jq -ec 'select(.meta.provisioned) | {dashboard:.dashboard.uid, panels:(.dashboar
 curl -fsS "http://$grafana/api/dashboards/uid/oracache-cp-monitoring" | jq -e '.meta.provisioned' >/dev/null
 curl -fsS "http://$grafana/api/datasources/proxy/uid/oracache-prometheus/api/v1/query?query=up" |
   jq -e '.status == "success" and (.data.result | length == 5)' >/dev/null
+for panel in 13 14; do
+  while IFS= read -r expression; do
+    await_query "$expression" 'length == 3 and all(.[]; (.value | tonumber) >= 0)' >/dev/null
+  done < <(jq -er --argjson panel "$panel" '.dashboard.panels[] | select(.id == $panel) | .targets[] | select(.refId == "B" or .refId == "C") | .expr' <<<"$dashboard")
+done
+matrix_query=$(jq -er '.dashboard.panels[] | select(.id == 33) | .targets[0].expr' <<<"$dashboard")
+regional_matrix=${matrix_query//\$\{raft_region\}/region-a}
+await_query "${regional_matrix//\$\{raft_partition:regex\}/.*}" \
+  'length == 3 and all(.[]; .labels.region == "region-a")' >/dev/null
+await_query "${regional_matrix//\$\{raft_partition:regex\}/0}" \
+  'length == 3 and all(.[]; .labels.partition == "0")' >/dev/null
+await_query "${regional_matrix//\$\{raft_partition:regex\}/1}" 'length == 0' >/dev/null
 while IFS= read -r expression; do
   query "$expression" >/dev/null
-done < <(jq -r '.dashboard.panels[].targets[]?.expr' <<<"$dashboard")
+done < <(jq -r '.dashboard.panels[] | select(.id != 33) | .targets[]?.expr' <<<"$dashboard")
 
 # As in TestControlPlaneGatewayFailover, stop the serving node after confirmation
 # and check the same Gateway with the acknowledged version and a conditional write.
@@ -165,6 +185,8 @@ await_query "up{instance=\"$leader:28191\"}" '.[0].value == "0"' >/dev/null
 next=$(await_query "$leader_term" "length == 1 and .[0].labels.node_id != \"$leader\" and (.[0].value | tonumber) > $old_term" |
   jq -er '.[0].labels.node_id')
 await_route "$next"
+await_query 'oracache_raft_replica_state' \
+  "length == 3 and any(.[]; .labels.node_id == \"$leader\" and .value == \"-1\") and any(.[]; .labels.node_id == \"$next\" and .value == \"2\")" >/dev/null
 [[ "$(topology_revision)" == "$topology" ]]
 expect_rpc ".status == \"GET_STATUS_HIT\" and .rev == \"$rev\" and .data == \"cmV0YWluZWQ=\" and .servedBy.instance == \"$next\"" get failover:key
 expect_rpc ".status == \"PUT_STATUS_OK\" and (.rev | tonumber) > $rev and .servedBy.instance == \"$next\"" put failover:key updated --expected-rev="$rev"
