@@ -34,6 +34,7 @@ groups:
                 and on (region, partition)
                   (count by (region, partition) (oracache_raft_leader_at_max_term) == 1)
               )
+              or (3 * (oracache_raft_is_learner == 1))
               or (oracache_raft_is_follower == 1)
               or (0 * oracache_raft_is_leader)
             )

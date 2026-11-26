@@ -287,7 +287,7 @@
           "unit": "none",
           "noValue": "—",
           "mappings": [
-            {"type":"value","options":{"-1":{"text":"↓","color":"#803640"},"0":{"text":"?","color":"#704b21"},"1":{"text":"F","color":"#284e82"},"2":{"text":"L","color":"#246444"}}},
+            {"type":"value","options":{"-1":{"text":"↓","color":"#803640"},"0":{"text":"?","color":"#704b21"},"1":{"text":"F","color":"#284e82"},"2":{"text":"L","color":"#246444"},"3":{"text":"Learner","color":"light-blue","index":4}}},
             {"type":"special","options":{"match":"null","result":{"text":"—","color":"#26292e"}}}
           ],
           "custom": {"cellOptions":{"type":"color-background","mode":"basic"},"align":"center","minWidth":85}

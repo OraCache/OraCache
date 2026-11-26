@@ -25,6 +25,7 @@
 /cmd/api-gateway/ @pluplohapy @petruekhin
 /configs/ @pluplohapy
 /configs/monitoring/ @pluplohapy @petruekhin
+/configs/monitoring/targets/ @pluplohapy @petruekhin
 /compose.cp-monitoring.yaml @pluplohapy @petruekhin
 /compose.cp-observability.yaml @pluplohapy @petruekhin
 /Dockerfile.cp-poc @pluplohapy @petruekhin

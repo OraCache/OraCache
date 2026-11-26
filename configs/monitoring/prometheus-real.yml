@@ -14,6 +14,7 @@ scrape_configs:
     static_configs:
       - targets: ["api-gateway:9466"]
   - job_name: storage-node
+    honor_labels: true
     file_sd_configs:
       - files: ["/etc/prometheus/targets/storage-nodes.yml"]
         refresh_interval: 5s

@@ -152,6 +152,33 @@ mkdir -p .reports
 integration/e2e/check-observability.sh > .reports/observability.log 2>&1
 ```
 
+#### Обнаружение Storage Node в Compose
+
+В профиле с динамическим обнаружением укажите отдельный каталог
+`ORACACHE_PROMETHEUS_TARGETS_DIR` и держите
+`integration/e2e/watch-storage-targets.sh <compose-project> <directory>`
+запущенным на хосте с Docker и `jq`. Prometheus читает обновляемый
+`storage-nodes.yml` через `file_sd`. Метка контейнера
+`io.oracache.metrics-address` задаёт внутренний HTTP-адрес `/metrics`
+в сети Compose. Имя сервиса Compose должно совпадать с `--node-id`.
+Скрипт проверяет адреса, публикует список атомарно и сохраняет последний
+список при ошибке чтения Docker. Контейнер Prometheus не получает сокет
+Docker.
+
+Остановленный контейнер остаётся целью с `up=0`. Удаление контейнера
+убирает цель. Изменения членства в Raft не меняют адреса сбора.
+Матрица показывает `Learner`, когда Raft применил это членство локально.
+Роль `F` показывается для голосующей реплики. `?` и `↓` описывают
+только наблюдение. Для живой ноды с несколькими партициями один scrape
+продолжает собирать все её метрики.
+
+Для локального прогона с закрытой сетью Compose запустите
+`integration/e2e/check-dynamic-shard.sh`. Он добавляет node-4 в живую
+standalone-группу через `add-learner`, проверяет метки цели и матрицу
+Grafana, продвигает learner, исключает voter и проверяет жизненный цикл
+scrape-цели. Промежуточные вызовы административного API идут через
+порты, доступные только на loopback.
+
 #### PromQL
 
 ```sh
