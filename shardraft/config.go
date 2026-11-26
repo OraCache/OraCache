@@ -186,19 +186,21 @@ type MembershipTransport interface {
 }
 
 type Status struct {
-	RegionID      string
-	ShardID       uint32
-	GroupID       string
-	PeerID        uint64
-	Role          string
-	Term          uint64
-	LeaderID      uint64
-	CommitIndex   uint64
-	AppliedIndex  uint64
-	SnapshotIndex uint64
-	LastIndex     uint64
-	IsLearner     bool
-	Member        bool
+	LeaderNodeID    string
+	RegionID        string
+	ShardID         uint32
+	GroupID         string
+	PeerID          uint64
+	Role            string
+	Term            uint64
+	LeaderID        uint64
+	CommitIndex     uint64
+	AppliedIndex    uint64
+	SnapshotIndex   uint64
+	LastIndex       uint64
+	MembershipIndex uint64
+	IsLearner       bool
+	Member          bool
 	// Ready means initialized and applied through a known committed position.
 	// It is not a promise of freshness or current quorum availability.
 	Ready     bool

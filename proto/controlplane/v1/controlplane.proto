@@ -55,6 +55,9 @@ message PartitionStatus {
   string leader_id = 6;
   bool ready = 7;
   string last_error = 8;
+  // Инкарнация группы и индекс последнего применённого изменения состава.
+  string group_id = 9;
+  uint64 membership_index = 10;
 }
 
 enum RaftRole {

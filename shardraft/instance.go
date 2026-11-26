@@ -158,9 +158,9 @@ func (n *Instance) snapshot(running bool, lastError string) *Status {
 	s := n.raw.BasicStatus()
 	return &Status{
 		RegionID: n.cfg.RegionID, ShardID: n.cfg.ShardID, GroupID: n.cfg.GroupID, PeerID: n.cfg.PeerID,
-		Role: s.RaftState.String(), Term: s.Term, LeaderID: s.Lead,
+		Role: s.RaftState.String(), Term: s.Term, LeaderID: s.Lead, LeaderNodeID: n.peers[s.Lead].NodeID,
 		CommitIndex: s.Commit, AppliedIndex: n.applied, SnapshotIndex: n.snapshotIndex, LastIndex: n.lastIndex,
-		IsLearner: n.isLearner(n.cfg.PeerID), Member: n.isVoter(n.cfg.PeerID),
+		MembershipIndex: n.configIndex, IsLearner: n.isLearner(n.cfg.PeerID), Member: n.isVoter(n.cfg.PeerID),
 		Ready:   running && n.canServe() && s.Lead != 0 && n.applied >= s.Commit,
 		Running: running, LastError: lastError,
 	}

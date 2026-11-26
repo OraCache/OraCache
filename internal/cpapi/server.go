@@ -197,19 +197,24 @@ func (s *Server) ReportHeartbeat(ctx context.Context, req *controlplanev1.Heartb
 		if len(p.GetLastError()) > MaxLastErrorBytes {
 			return nil, status.Errorf(codes.InvalidArgument, "partition %d last_error is too long", p.GetPartitionId())
 		}
+		if len(p.GetGroupId()) > MaxIDBytes {
+			return nil, status.Errorf(codes.InvalidArgument, "partition %d group_id is too long", p.GetPartitionId())
+		}
 		role, err := fromProtoRole(p.GetRole())
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		heartbeat.Partitions = append(heartbeat.Partitions, statestore.PartitionStatus{
-			PartitionID:  p.GetPartitionId(),
-			Role:         role,
-			Term:         p.GetTerm(),
-			CommitIndex:  p.GetCommitIndex(),
-			AppliedIndex: p.GetAppliedIndex(),
-			LeaderID:     p.GetLeaderId(),
-			Ready:        p.GetReady(),
-			LastError:    p.GetLastError(),
+			PartitionID:     p.GetPartitionId(),
+			GroupID:         p.GetGroupId(),
+			MembershipIndex: p.GetMembershipIndex(),
+			Role:            role,
+			Term:            p.GetTerm(),
+			CommitIndex:     p.GetCommitIndex(),
+			AppliedIndex:    p.GetAppliedIndex(),
+			LeaderID:        p.GetLeaderId(),
+			Ready:           p.GetReady(),
+			LastError:       p.GetLastError(),
 		})
 	}
 
@@ -306,6 +311,11 @@ func (s *Server) GetConfig(ctx context.Context, req *controlplanev1.GetConfigReq
 	}
 	if gateway && s.masterReadsOnly {
 		restrictRegionalReads(snapshot.Config)
+	}
+	if !gateway {
+		for i := range snapshot.Config.Partitions {
+			snapshot.Config.Partitions[i].UseConfirmedVoters()
+		}
 	}
 	response := &controlplanev1.GetConfigResponse{
 		Revision: snapshot.Revision,

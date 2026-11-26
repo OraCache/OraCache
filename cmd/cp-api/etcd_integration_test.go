@@ -104,6 +104,10 @@ func TestEtcdControlPlane(t *testing.T) {
 			t.Fatalf("revision %d: expected only the term-2 follower to be eligible: %+v", view.Revision, assignment)
 		}
 	})
+	t.Run("confirmed_membership_survives_cp_restart", func(t *testing.T) {
+		options.prefix = "/confirmed-membership"
+		testEtcdConfirmedMembership(t, options)
+	})
 	t.Run("backend_outage_keeps_gateway_map", func(t *testing.T) {
 		options.prefix = "/outage"
 		store, _, _ := openTestStore(t, options)
@@ -452,4 +456,54 @@ func heartbeatAge(t *testing.T, api *cpapi.Server) (float64, bool) {
 		}
 	}
 	return 0, false
+}
+
+type confirmedMembershipFixture struct {
+	view cpapi.MembershipObservation
+}
+
+func (f confirmedMembershipFixture) ReadConfirmedMembership(context.Context, cpapi.RaftGroup) (cpapi.MembershipObservation, error) {
+	return f.view, nil
+}
+
+func testEtcdConfirmedMembership(t *testing.T, options storeOptions) {
+	ctx := t.Context()
+	store, _, closeStore := openTestStore(t, options)
+	publishConfig(t, store, cpconfigtest.Config(1))
+	_, first, stop := startTestCP(t, store)
+
+	group := cpapi.RaftGroup{Region: "eu", GroupID: "eu/0/incarnation"}
+	view := cpapi.MembershipObservation{
+		Group: group, ResponderNodeID: "eu-1", LeaderNodeID: "eu-1",
+		Index: 45, Term: 8, VoterNodeIDs: []string{"eu-1", "eu-2"},
+	}
+	if err := first.ReconcileMembership(ctx, group, confirmedMembershipFixture{view: view}); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	closeStore()
+
+	reopened, revision, _ := openTestStore(t, options)
+	if revision != 2 {
+		t.Fatalf("reopened StateStore has revision %d, want 2", revision)
+	}
+	client, restarted, _ := startTestCP(t, reopened)
+	view.Index = 43
+	if err := restarted.ReconcileMembership(ctx, group, confirmedMembershipFixture{view: view}); !errors.Is(err, cpapi.ErrMembershipObservation) {
+		t.Fatalf("older confirmation after CP restart: %v", err)
+	}
+	response, err := client.GetConfig(ctx, &controlplanev1.GetConfigRequest{
+		NodeId: "eu-1", Kind: controlplanev1.AgentKind_AGENT_KIND_STORAGE_NODE,
+	})
+	if err != nil || response.GetRevision() != 2 {
+		t.Fatalf("config after CP restart = %v, %v", response, err)
+	}
+	snapshot, err := reopened.Config(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment, ok := snapshot.Config.Assignment("eu", 0)
+	if !ok || assignment.ConfirmedMembership == nil || assignment.ConfirmedMembership.Index != 45 {
+		t.Fatalf("confirmed membership after restart = %+v", assignment.ConfirmedMembership)
+	}
 }

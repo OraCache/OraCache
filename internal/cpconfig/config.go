@@ -10,6 +10,7 @@ package cpconfig
 import (
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // DefaultPartitionCount — фиксированное число партиций кластера OraCache.
@@ -118,16 +119,28 @@ type Node struct {
 // Ready/Readable/Writable заполняются live-view по heartbeat. В статическом
 // bootstrap snapshot они могут быть false.
 type PartitionAssignment struct {
-	PartitionID         uint32   `json:"partition_id"`
-	Region              string   `json:"region"`
-	LeaderNodeID        string   `json:"leader_node_id"`
-	ReplicaNodeIDs      []string `json:"replica_node_ids"`
-	Ready               bool     `json:"ready,omitempty"`
-	Readable            bool     `json:"readable,omitempty"`
-	Writable            bool     `json:"writable,omitempty"`
-	ObservedTerm        uint64   `json:"observed_term,omitempty"`
-	ReadyReplicaNodeIDs []string `json:"ready_replica_node_ids,omitempty"`
-	LeaderConflict      bool     `json:"leader_conflict,omitempty"`
+	PartitionID         uint32          `json:"partition_id"`
+	Region              string          `json:"region"`
+	LeaderNodeID        string          `json:"leader_node_id"`
+	ReplicaNodeIDs      []string        `json:"replica_node_ids"`
+	Ready               bool            `json:"ready,omitempty"`
+	Readable            bool            `json:"readable,omitempty"`
+	Writable            bool            `json:"writable,omitempty"`
+	ObservedTerm        uint64          `json:"observed_term,omitempty"`
+	ReadyReplicaNodeIDs []string        `json:"ready_replica_node_ids,omitempty"`
+	LeaderConflict      bool            `json:"leader_conflict,omitempty"`
+	ConfirmedMembership *RaftMembership `json:"confirmed_membership,omitempty"`
+}
+
+// RaftMembership stores the last confirmed membership and voter admissions.
+// It is CP storage metadata. Gateway receives its projection in the live view.
+type RaftMembership struct {
+	GroupID         string   `json:"group_id"`
+	Index           uint64   `json:"index"`
+	Term            uint64   `json:"term"`
+	LeaderNodeID    string   `json:"leader_node_id"`
+	VoterNodeIDs    []string `json:"voter_node_ids"`
+	AdmittedNodeIDs []string `json:"admitted_node_ids"`
 }
 
 // Validate проверяет инварианты конфигурации Control Plane. Вызывается перед
@@ -261,6 +274,9 @@ func (c *Config) Validate() error {
 		if a.Writable && regions[a.Region].Role != RegionRoleMaster {
 			return fmt.Errorf("%w: assignment (%s,%d) is writable outside master region", ErrInvalidConfig, a.Region, a.PartitionID)
 		}
+		if err := a.validateMembership(nodes); err != nil {
+			return err
+		}
 		coverage[a.Region][a.PartitionID] = true
 	}
 
@@ -269,6 +285,35 @@ func (c *Config) Validate() error {
 			if !covered {
 				return fmt.Errorf("%w: region %q is missing assignment for partition %d", ErrInvalidConfig, regionID, partitionID)
 			}
+		}
+	}
+	return nil
+}
+
+// UseConfirmedVoters projects the verified Raft voter set into a copy of the assignment.
+func (a *PartitionAssignment) UseConfirmedVoters() {
+	if m := a.ConfirmedMembership; m != nil {
+		a.ReplicaNodeIDs = slices.Clone(m.VoterNodeIDs)
+		a.LeaderNodeID = m.LeaderNodeID
+	}
+}
+
+func (a PartitionAssignment) validateMembership(nodes map[string]Node) error {
+	m := a.ConfirmedMembership
+	if m == nil {
+		return nil
+	}
+	if m.GroupID == "" || m.Index == 0 || m.Term == 0 || !slices.Contains(m.VoterNodeIDs, m.LeaderNodeID) {
+		return fmt.Errorf("%w: incomplete confirmed membership for (%s,%d)", ErrInvalidConfig, a.Region, a.PartitionID)
+	}
+	for i, id := range m.VoterNodeIDs {
+		if nodes[id].Region != a.Region || (i > 0 && m.VoterNodeIDs[i-1] >= id) {
+			return fmt.Errorf("%w: unknown, duplicate or unsorted voter %q in confirmed membership", ErrInvalidConfig, id)
+		}
+	}
+	for i, id := range m.AdmittedNodeIDs {
+		if !slices.Contains(m.VoterNodeIDs, id) || (i > 0 && m.AdmittedNodeIDs[i-1] >= id) {
+			return fmt.Errorf("%w: invalid admission for voter %q", ErrInvalidConfig, id)
 		}
 	}
 	return nil
@@ -355,6 +400,12 @@ func (c *Config) Clone() *Config {
 		out.Partitions[i] = c.Partitions[i]
 		out.Partitions[i].ReplicaNodeIDs = append([]string(nil), c.Partitions[i].ReplicaNodeIDs...)
 		out.Partitions[i].ReadyReplicaNodeIDs = append([]string(nil), c.Partitions[i].ReadyReplicaNodeIDs...)
+		if membership := c.Partitions[i].ConfirmedMembership; membership != nil {
+			copy := *membership
+			copy.VoterNodeIDs = slices.Clone(membership.VoterNodeIDs)
+			copy.AdmittedNodeIDs = slices.Clone(membership.AdmittedNodeIDs)
+			out.Partitions[i].ConfirmedMembership = &copy
+		}
 	}
 	return &out
 }

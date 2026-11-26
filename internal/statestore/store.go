@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/OraCache/oracache/internal/cpconfig"
@@ -46,14 +47,16 @@ func (r RaftRole) String() string {
 
 // PartitionStatus — последнее полученное состояние одной локальной Raft-группы.
 type PartitionStatus struct {
-	PartitionID  uint32
-	Role         RaftRole
-	Term         uint64
-	CommitIndex  uint64
-	AppliedIndex uint64
-	LeaderID     string
-	Ready        bool
-	LastError    string
+	PartitionID     uint32
+	GroupID         string
+	MembershipIndex uint64
+	Role            RaftRole
+	Term            uint64
+	CommitIndex     uint64
+	AppliedIndex    uint64
+	LeaderID        string
+	Ready           bool
+	LastError       string
 }
 
 // Resources — последний полученный snapshot ёмкости ноды.
@@ -161,6 +164,19 @@ func validateConfigTransition(current Snapshot, next *cpconfig.Config) error {
 	}
 	if next.PartitionCount != current.Config.PartitionCount {
 		return fmt.Errorf("%w: have %d, got %d", cpconfig.ErrPartitionCountChanged, current.Config.PartitionCount, next.PartitionCount)
+	}
+	for _, assignment := range current.Config.Partitions {
+		previous := assignment.ConfirmedMembership
+		if previous == nil {
+			continue
+		}
+		updated, _ := next.Assignment(assignment.Region, assignment.PartitionID)
+		membership := updated.ConfirmedMembership
+		if membership == nil || membership.GroupID != previous.GroupID || membership.Index < previous.Index || membership.Term < previous.Term ||
+			(membership.Term == previous.Term && membership.LeaderNodeID != previous.LeaderNodeID) ||
+			(membership.Index == previous.Index && !slices.Equal(membership.VoterNodeIDs, previous.VoterNodeIDs)) {
+			return fmt.Errorf("%w: confirmed membership for (%s,%d) regressed or changed identity", cpconfig.ErrStaleRevision, assignment.Region, assignment.PartitionID)
+		}
 	}
 	return nil
 }

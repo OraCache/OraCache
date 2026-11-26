@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 
 	"github.com/OraCache/oracache/internal/cpconfig"
@@ -42,7 +43,14 @@ func Validate(current *cpconfig.Config, plan scheduler.Plan) (bool, error) {
 			candidate.LeaderNodeID != currentGroup.LeaderNodeID {
 			return false, membershipRequired(currentGroup)
 		}
-		for _, id := range candidate.ReplicaNodeIDs {
+		if !reflect.DeepEqual(currentGroup.ConfirmedMembership, candidate.ConfirmedMembership) {
+			return false, membershipRequired(currentGroup)
+		}
+		protectedIDs := candidate.ReplicaNodeIDs
+		if membership := candidate.ConfirmedMembership; membership != nil {
+			protectedIDs = slices.Concat(protectedIDs, membership.VoterNodeIDs)
+		}
+		for _, id := range protectedIDs {
 			was, _ := current.NodeByID(id)
 			will, _ := next.NodeByID(id)
 			if (was.State == cpconfig.NodeStateDraining) != (will.State == cpconfig.NodeStateDraining) {

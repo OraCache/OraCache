@@ -106,6 +106,7 @@ func Calculate(current *cpconfig.Config, input Input) (Plan, error) {
 			}
 			proposed.Partitions = append(proposed.Partitions, cpconfig.PartitionAssignment{
 				Region: region.ID, PartitionID: partition, LeaderNodeID: leader, ReplicaNodeIDs: replicas,
+				ConfirmedMembership: previous[i].ConfirmedMembership,
 			})
 			before := slices.Clone(previous[i].ReplicaNodeIDs)
 			slices.Sort(before)

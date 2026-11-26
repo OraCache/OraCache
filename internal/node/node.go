@@ -247,20 +247,15 @@ func (n *Node) requireMasterForWrites(ctx context.Context, req any, info *grpc.U
 func (n *Node) PartitionStatuses(context.Context) ([]*controlplanev1.PartitionStatus, error) {
 	s := n.inst.HeartbeatStatus()
 	ps := &controlplanev1.PartitionStatus{
-		PartitionId:  s.ShardID,
-		Role:         protoRole(s.Role),
-		Term:         s.Term,
-		CommitIndex:  s.CommitIndex,
-		AppliedIndex: s.AppliedIndex,
-		Ready:        s.Ready && s.Running && (n.agent == nil || n.agent.Confirmed()),
-	}
-	if s.LeaderID != 0 {
-		for _, member := range n.inst.Membership().Members {
-			if member.ID == s.LeaderID {
-				ps.LeaderId = member.NodeID
-				break
-			}
-		}
+		PartitionId:     s.ShardID,
+		GroupId:         s.GroupID,
+		MembershipIndex: s.MembershipIndex,
+		Role:            protoRole(s.Role),
+		Term:            s.Term,
+		LeaderId:        s.LeaderNodeID,
+		CommitIndex:     s.CommitIndex,
+		AppliedIndex:    s.AppliedIndex,
+		Ready:           s.Ready && s.Running && (n.agent == nil || n.agent.Confirmed()),
 	}
 	if s.IsLearner {
 		ps.Role = controlplanev1.RaftRole_RAFT_ROLE_LEARNER

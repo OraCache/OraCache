@@ -71,7 +71,7 @@ await() {
       printf '%s\n' "$output"
       return
     fi
-    kill -0 "$watcher"
+    if [[ -n "$watcher" ]]; then kill -0 "$watcher"; fi
     sleep 1
   done
   printf 'Timed out waiting for %s\n' "$*" >&2
@@ -142,3 +142,35 @@ await prom_query 'up{job="storage-node",node_id="node-4"}' 'length == 1 and .[0]
 compose rm -f node-4 >&2
 await prom_query 'up{job="storage-node",node_id="node-4"}' 'length == 0'
 [[ $(compose ps -q prometheus) == "$prometheus_id" ]]
+
+# The same mutation is currently refused when the Storage Node runs a CP Agent.
+# Use a fresh cluster because its earlier standalone Raft state is in memory.
+kill "$watcher"
+wait "$watcher" || true
+watcher=
+compose down --volumes >&2
+project="$project-cp"
+cat > "$tmp/cluster.yaml" <<'YAML'
+x-publish: &publish
+  ports: ["127.0.0.1::28191"]
+services:
+  node-1: *publish
+  node-2: *publish
+  node-3: *publish
+YAML
+export ORACACHE_CP_PORT=0 ORACACHE_CP_STATUS_PORT=0
+compose up -d --no-build cp-api node-1 node-2 node-3 api-gateway >&2
+gateway=$(compose port api-gateway 28080)
+write_through_gateway() {
+  ORACACHE_ENDPOINT="$gateway" "$tmp/oracache" --timeout=3s put guard:demo before |
+    jq -ce 'select(.status == "PUT_STATUS_OK") | {status, servedBy}'
+}
+await write_through_gateway
+leader=$(await find_leader node-1 node-2 node-3)
+http=$(compose port "$leader" 28191)
+http_code=$(curl -sS --max-time 5 -o "$tmp/guard.json" -w '%{http_code}' "http://$http/membership" \
+  -H 'Content-Type: application/json' -d "$add")
+[[ "$http_code" == 409 ]]
+jq -ce 'select(.code == "FailedPrecondition")' "$tmp/guard.json"
+curl -fsS --max-time 5 "http://$http/membership" | jq -e 'all(.members[]; .id != 4)' >/dev/null
+printf 'Observed standalone AddLearner plus the running CP Agent membership guard.\n'

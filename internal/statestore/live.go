@@ -1,6 +1,10 @@
 package statestore
 
-import "github.com/OraCache/oracache/internal/cpconfig"
+import (
+	"slices"
+
+	"github.com/OraCache/oracache/internal/cpconfig"
+)
 
 type replicaHeartbeat struct {
 	heartbeat Heartbeat
@@ -16,7 +20,13 @@ func projectLiveConfig(snapshot Snapshot, lookup func(cpconfig.Node) replicaHear
 	config := snapshot.Config.Clone()
 	assigned := make(map[string]bool, len(config.Nodes))
 	for i := range config.Partitions {
-		for _, nodeID := range config.Partitions[i].ReplicaNodeIDs {
+		assignment := &config.Partitions[i]
+		admitted := assignment.ReplicaNodeIDs
+		if membership := assignment.ConfirmedMembership; membership != nil {
+			admitted = membership.AdmittedNodeIDs
+			assignment.UseConfirmedVoters()
+		}
+		for _, nodeID := range admitted {
 			assigned[nodeID] = true
 		}
 	}
@@ -55,11 +65,17 @@ func projectLiveConfig(snapshot Snapshot, lookup func(cpconfig.Node) replicaHear
 	for i := range config.Partitions {
 		assignment := &config.Partitions[i]
 		assignment.ObservedTerm = 0
+		membership := assignment.ConfirmedMembership
+		if membership != nil {
+			assignment.ObservedTerm = membership.Term
+		}
 		assignment.ReadyReplicaNodeIDs = nil
 		assignment.LeaderConflict = false
 		for _, nodeID := range assignment.ReplicaNodeIDs {
 			status := statuses[replicaKey{nodeID, assignment.PartitionID}]
-			assignment.ObservedTerm = max(assignment.ObservedTerm, status.Term)
+			if membership == nil || status.matchesMembership(membership) {
+				assignment.ObservedTerm = max(assignment.ObservedTerm, status.Term)
+			}
 		}
 		var leaderID string
 		for _, nodeID := range assignment.ReplicaNodeIDs {
@@ -67,10 +83,18 @@ func projectLiveConfig(snapshot Snapshot, lookup func(cpconfig.Node) replicaHear
 			if !ok || !status.Ready || status.Term != assignment.ObservedTerm {
 				continue
 			}
+			if status.Role == RaftRoleLearner {
+				continue
+			}
+			if membership != nil && (!slices.Contains(membership.AdmittedNodeIDs, nodeID) || !status.matchesMembership(membership) ||
+				(status.Role != RaftRoleFollower && status.Role != RaftRoleLeader)) {
+				continue
+			}
 			assignment.ReadyReplicaNodeIDs = append(assignment.ReadyReplicaNodeIDs, nodeID)
 			// Followers cannot establish the readiness of the leader they report.
 			if status.Role == RaftRoleLeader && (status.LeaderID == "" || status.LeaderID == nodeID) {
-				assignment.LeaderConflict = leaderID != ""
+				assignment.LeaderConflict = assignment.LeaderConflict || leaderID != "" ||
+					(membership != nil && status.Term == membership.Term && nodeID != membership.LeaderNodeID)
 				leaderID = nodeID
 			}
 		}
@@ -87,4 +111,8 @@ func projectLiveConfig(snapshot Snapshot, lookup func(cpconfig.Node) replicaHear
 		Config:                   config,
 		MissingReplicaHeartbeats: missingReplicaHeartbeats,
 	}
+}
+
+func (p PartitionStatus) matchesMembership(m *cpconfig.RaftMembership) bool {
+	return p.GroupID == m.GroupID && p.MembershipIndex == m.Index && p.AppliedIndex >= m.Index && p.CommitIndex >= p.AppliedIndex && p.LeaderID != ""
 }
