@@ -156,6 +156,11 @@ jq -ec 'select(.meta.provisioned) | {dashboard:.dashboard.uid, panels:(.dashboar
 curl -fsS "http://$grafana/api/dashboards/uid/oracache-cp-monitoring" | jq -e '.meta.provisioned' >/dev/null
 curl -fsS "http://$grafana/api/datasources/proxy/uid/oracache-prometheus/api/v1/query?query=up" |
   jq -e '.status == "success" and (.data.result | length == 5)' >/dev/null
+for panel in 13 14; do
+  while IFS= read -r expression; do
+    await_query "$expression" 'length == 3 and all(.[]; (.value | tonumber) >= 0)' >/dev/null
+  done < <(jq -er --argjson panel "$panel" '.dashboard.panels[] | select(.id == $panel) | .targets[] | select(.refId == "B" or .refId == "C") | .expr' <<<"$dashboard")
+done
 matrix_query=$(jq -er '.dashboard.panels[] | select(.id == 33) | .targets[0].expr' <<<"$dashboard")
 regional_matrix=${matrix_query//\$\{raft_region\}/region-a}
 await_query "${regional_matrix//\$\{raft_partition:regex\}/.*}" \
