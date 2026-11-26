@@ -71,11 +71,12 @@ type Config struct {
 	Store       store.Config
 	Replication replication.Config
 
-	// Raft timing; zero values select shardraft defaults.
-	TickInterval    time.Duration
-	ElectionTicks   int
-	RequestTimeout  time.Duration
-	SnapshotEntries uint64
+	// Zero values select shardraft defaults.
+	TickInterval     time.Duration
+	ElectionTicks    int
+	RequestTimeout   time.Duration
+	SnapshotEntries  uint64
+	MaxRaftWireBytes int64
 
 	Logger *slog.Logger
 }
@@ -122,14 +123,6 @@ func New(cfg Config) (*Node, error) {
 	cfg.Replication = replState.Config()
 	rc := &cfg.Replication
 
-	// JSON checkpoints can expand keys up to 6x. Keep the single-message MVP
-	// safely below the 63 MiB snapshot ceiling, including membership metadata.
-	if cfg.Store.MaxBytes == 0 {
-		cfg.Store.MaxBytes = MaxStoreBytes
-	}
-	if cfg.Store.MaxBytes > MaxStoreBytes {
-		return nil, fmt.Errorf("node: max-bytes exceeds the %d-byte snapshot-safe MVP limit", MaxStoreBytes)
-	}
 	n := &Node{cfg: cfg, log: cfg.Logger.With("node", cfg.NodeID)}
 
 	raftPeers := make([]shardraft.Peer, 0, len(cfg.Peers))
@@ -165,7 +158,7 @@ func New(cfg Config) (*Node, error) {
 		RegionID: cfg.Region, ShardID: cfg.ShardID, GroupID: cfg.GroupID,
 		PeerID: cfg.PeerID, Peers: raftPeers, Join: cfg.Join, ReadMode: cfg.ReadMode,
 		TickInterval: cfg.TickInterval, ElectionTicks: cfg.ElectionTicks,
-		RequestTimeout: cfg.RequestTimeout, SnapshotEntries: cfg.SnapshotEntries,
+		RequestTimeout: cfg.RequestTimeout, SnapshotEntries: cfg.SnapshotEntries, MaxWireBytes: cfg.MaxRaftWireBytes,
 		Observer: raftMetrics,
 		Logger:   &raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)},
 	}, sm, transport)

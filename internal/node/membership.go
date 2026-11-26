@@ -12,10 +12,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// MaxStoreBytes bounds JSON checkpoints while the MVP sends snapshots in one
-// HTTP message. Store's standalone default is intentionally unaffected.
-const MaxStoreBytes int64 = 8 << 20
-
 func (n *Node) Membership() shardraft.Membership { return n.inst.Membership() }
 
 // These application entry points use the same validation as the HTTP and gRPC APIs.

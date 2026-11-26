@@ -25,7 +25,7 @@ func (n *Instance) makeSnapshot() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(meta)+len(cache)+4 > maxWireBytes-(1<<20) {
+	if uint64(len(meta)) > uint64(^uint32(0)) || int64(len(meta))+int64(len(cache))+4 > n.cfg.MaxWireBytes-wireOverhead {
 		return nil, fmt.Errorf("checkpoint exceeds transport limit")
 	}
 	data := make([]byte, 4, 4+len(meta)+len(cache))

@@ -40,6 +40,7 @@ func TestHTTPMembershipReplacesLostStore(t *testing.T) {
 		configs = append(configs, node.Config{
 			NodeID: peer.NodeID, PeerID: peer.ID, Region: "region-a", GroupID: "membership-http",
 			GRPCListener: g, RaftListener: r, TickInterval: 10 * time.Millisecond, ElectionTicks: 20, SnapshotEntries: 8,
+			Store: store.Config{MaxBytes: 16 << 20}, MaxRaftWireBytes: 64 << 20,
 			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		})
 		conn, err := grpc.NewClient(peer.ClientAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -182,11 +183,7 @@ func TestHTTPMembershipReplacesLostStore(t *testing.T) {
 	}
 }
 
-func TestRaftStoreSnapshotBudget(t *testing.T) {
-	_, err := node.New(node.Config{NodeID: "n", Region: "r", GroupID: "g", Store: store.Config{MaxBytes: node.MaxStoreBytes + 1}})
-	if err == nil || !strings.Contains(err.Error(), "snapshot-safe") {
-		t.Fatalf("unsafe budget accepted: %v", err)
-	}
+func TestRaftStoreRejectsOversizedKey(t *testing.T) {
 	backend, err := store.New(store.Config{MaxBytes: 16 << 10})
 	if err != nil {
 		t.Fatal(err)

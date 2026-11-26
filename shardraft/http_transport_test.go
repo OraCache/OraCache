@@ -1,10 +1,12 @@
 package shardraft_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -18,6 +20,32 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
+
+func TestRaftHTTPWireLimit(t *testing.T) {
+	cfg := testConfig(1, 1)
+	cfg.MaxCommandBytes = 1024
+	cfg.MaxWireBytes = (1 << 20) + 1024
+	n, err := shardraft.NewInstance(cfg, shardraft.AdaptCache(cache.New()), shardraft.NewMemoryNetwork())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { n.Close() })
+	for _, tc := range []struct {
+		size int64
+		want int
+	}{
+		{cfg.MaxWireBytes, http.StatusBadRequest}, // Within limit, but not a valid Raft message.
+		{cfg.MaxWireBytes + 1, http.StatusRequestEntityTooLarge},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/raft", bytes.NewReader(make([]byte, tc.size)))
+		r.Header.Set("X-Oracache-Raft-Group", cfg.GroupID)
+		w := httptest.NewRecorder()
+		n.RaftHandler().ServeHTTP(w, r)
+		if w.Code != tc.want {
+			t.Fatalf("HTTP body of %d bytes: status %d, want %d", tc.size, w.Code, tc.want)
+		}
+	}
+}
 
 func grpcClient(t *testing.T, n *shardraft.Instance) pb.CacheGatewayClient {
 	t.Helper()

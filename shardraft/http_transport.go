@@ -101,7 +101,7 @@ func (n *Instance) RaftHandler() http.Handler {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxWireBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, n.cfg.MaxWireBytes)
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "invalid message body", http.StatusRequestEntityTooLarge)

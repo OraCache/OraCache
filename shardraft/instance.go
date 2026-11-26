@@ -17,8 +17,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const maxWireBytes = 64 << 20
-
 type result struct {
 	message    proto.Message
 	membership *MembershipResult
@@ -298,7 +296,7 @@ func (n *Instance) Step(ctx context.Context, group string, data []byte) error {
 	if group != n.cfg.GroupID {
 		return status.Error(codes.InvalidArgument, "wrong Raft group")
 	}
-	if len(data) > maxWireBytes {
+	if int64(len(data)) > n.cfg.MaxWireBytes {
 		return status.Error(codes.ResourceExhausted, "Raft message too large")
 	}
 	var m raftpb.Message
@@ -570,7 +568,7 @@ func (n *Instance) processReady() error {
 			if err != nil {
 				return fmt.Errorf("checkpoint: %w", err)
 			}
-			if len(data) > maxWireBytes-(1<<20) {
+			if int64(len(data)) > n.cfg.MaxWireBytes-wireOverhead {
 				return fmt.Errorf("checkpoint exceeds PoC transport limit")
 			}
 			if _, err := n.storage.CreateSnapshot(n.applied, &n.conf, data); err != nil {
