@@ -68,6 +68,58 @@ GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
 
 Правила маршрутизации и повторов описаны в [ADR-004](docs/ADR-004-cp-raft-gateway-routing.md).
 
+### Мониторинг локального PoC
+
+Этот стенд запускает два агента с заданными ролями партиций, Prometheus
+и Grafana. Агенты имитируют heartbeat для проверки метрик. Для проверки
+смены лидера реальной Raft-группы используйте стенд выше. Prometheus опрашивает `/metrics` CP API и Gateway каждые 2 с.
+Оба веб-интерфейса доступны только через loopback. Grafana открывает готовый
+дашборд в режиме просмотра без входа.
+
+```sh
+docker compose -f compose.cp-monitoring.yaml config --quiet
+docker compose -f compose.cp-monitoring.yaml up -d --build
+docker compose -f compose.cp-monitoring.yaml ps
+```
+
+- [Дашборд OraCache · Control Plane и Gateway](http://localhost:3000/d/oracache-cp-monitoring)
+- [Цели сбора Prometheus](http://localhost:9090/targets)
+
+В терминале те же метрики можно запросить через API Prometheus. Для вывода
+меток и значений нужен `jq`.
+
+```sh
+prom_query() {
+  curl -fsS -G http://localhost:9090/api/v1/query --data-urlencode "query=$1" |
+    jq -c '.data.result[] | {labels: .metric, value: (.value[1] | tonumber)}'
+}
+
+prom_query 'up{job=~"cp-api|api-gateway"}'
+prom_query 'oracache_cp_heartbeat_age_seconds{job="cp-api"}'
+prom_query 'oracache_gateway_partitions_without_route{job="api-gateway"}'
+```
+
+1. После первых heartbeat, обновления карты и scrape обе цели показывают
+   `up=1`. Возраст heartbeat нод `eu-1` и `eu-2` обычно меньше 1 с.
+   Число партиций без маршрута равно 0 и для `operation="get"`, и для
+   `operation="put"`.
+2. Выполните `docker compose -f compose.cp-monitoring.yaml stop eu-1` и
+   повторяйте запросы. Возраст heartbeat `eu-1` растёт. Через примерно 20 с
+   (TTL 15 с, poll Gateway 2 с, scrape 2 с) обе серии Gateway показывают 64.
+   Обе цели сбора по-прежнему показывают `up=1`.
+3. Выполните `docker compose -f compose.cp-monitoring.yaml start eu-1`.
+   После нового heartbeat, poll и scrape возраст `eu-1` снова меньше 1 с,
+   а число партиций без маршрута возвращается к 0 для GET и PUT.
+
+Панели доступности показывают состояние последнего scrape каждой цели.
+Если scrape завершился ошибкой, Prometheus отдаёт `up=0`. Если серия
+отсутствует, Grafana показывает отсутствие данных. Ноль на графиках GET
+и PUT означает, что в текущей карте есть маршрут для всех партиций.
+
+```sh
+docker compose -f compose.cp-monitoring.yaml down
+```
+
 ---
 
 ## PoC без Control Plane

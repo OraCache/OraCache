@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+FROM golang:1.27.3-alpine AS build
+WORKDIR /src
+ENV GOWORK=off
+COPY go.mod go.sum ./
+COPY gen/go.mod gen/go.sum ./gen/
+RUN go mod download
+COPY gen ./gen
+COPY shardraft ./shardraft
+COPY internal ./internal
+COPY cmd/cp-api ./cmd/cp-api
+COPY cmd/oracache-node ./cmd/oracache-node
+COPY cmd/api-gateway ./cmd/api-gateway
+RUN CGO_ENABLED=0 go build -trimpath -o /out/ ./cmd/cp-api ./cmd/oracache-node ./cmd/api-gateway
+
+FROM scratch
+COPY --from=build /out/ /
+USER 65532:65532
