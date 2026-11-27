@@ -15,6 +15,7 @@ import (
 
 	"github.com/OraCache/oracache/internal/cpapi"
 	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/gateway"
 	"github.com/OraCache/oracache/internal/statestore"
 )
 
@@ -155,36 +156,82 @@ func TestStorageDiscoveryIgnoresMembershipsFromBootstrapJSON(t *testing.T) {
 	assertDiscovery(t, cpapi.New(store), "?region=a", http.StatusServiceUnavailable, nil)
 }
 
-func TestStorageDiscoveryCheckpointFailurePreservesPreviousMembership(t *testing.T) {
+func TestStorageDiscoveryCheckpointFailureDoesNotRemoveGatewayRoute(t *testing.T) {
 	now := time.Unix(1000, 0)
 	path := filepath.Join(t.TempDir(), "membership.json")
 	store := openDiscoveryStore(t, path, discoveryConfig())
-	api := cpapi.New(store, cpapi.WithClock(fixedClock{now: now}))
 	voter := cpconfig.GroupMember{PeerID: 1, NodeID: "a1", Address: "a1:9000", RaftAddress: "http://a1:9001/raft", Voter: true}
 	learner := cpconfig.GroupMember{PeerID: 3, NodeID: "a3", Address: "a3:9000", RaftAddress: "http://a3:9001/raft", Learner: true}
 	m := cpconfig.GroupMembership{GroupID: "a0", Region: "a", ReporterID: 1, Index: 10, Members: []cpconfig.GroupMember{voter, learner}}
 	reportDiscoveryMembership(t, store, now, 3, m)
+	assertDiscovery(t, cpapi.New(store, cpapi.WithClock(fixedClock{now: now})), "?region=a", http.StatusOK, []discoveryTarget{target("a1"), target("a3")})
+
 	if err := os.Rename(path, path+".saved"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
 	}
+
+	now = now.Add(2 * cpapi.DefaultNodeTTL)
 	m.Index++
 	m.Members = []cpconfig.GroupMember{voter}
-	_, err := store.UpsertHeartbeat(t.Context(), statestore.Heartbeat{
+	_, heartbeatErr := store.UpsertHeartbeat(t.Context(), statestore.Heartbeat{
 		NodeID: "a1", Region: "a", ReceivedAt: now,
 		Partitions: []statestore.PartitionStatus{{Role: statestore.RaftRoleLeader, Term: 3, Ready: true, LeaderID: "a1", Membership: &m}},
 	})
-	if err == nil {
-		t.Fatal("heartbeat committed despite failed checkpoint")
+
+	view, err := store.LiveConfig(t.Context(), now, cpapi.DefaultNodeTTL)
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertDiscovery(t, api, "?region=a", http.StatusOK, []discoveryTarget{target("a1"), target("a3")})
+	router, err := gateway.NewRouter("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.ApplyView(view.Config); err != nil {
+		t.Fatal(err)
+	}
+	if leader, err := router.WriteLeader(0); err != nil || leader.NodeID != voter.NodeID {
+		t.Fatalf("healthy leader lost its write route after TTL: %+v, %v (heartbeat error: %v)", leader, err, heartbeatErr)
+	}
+	if heartbeatErr != nil {
+		t.Fatalf("healthy leader's heartbeat was rejected: %v", heartbeatErr)
+	}
+	api := cpapi.New(store, cpapi.WithClock(fixedClock{now: now}))
+	assertDiscovery(t, api, "?region=a", http.StatusServiceUnavailable, nil)
+	assertDiscoveryMetric(t, api, `oracache_cp_raft_membership_fresh{partition="0",region="a"} 1`)
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	reportDiscoveryMembership(t, store, now, 3, m)
 	assertDiscovery(t, api, "?region=a", http.StatusOK, []discoveryTarget{target("a1")})
+}
+
+func TestStorageDiscoveryRecoversFromInvalidCheckpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "membership.json")
+	if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.OpenMemory(path)
+	if err == nil || store == nil {
+		t.Fatalf("expected a checkpoint error and a usable store, got %v", err)
+	}
+	config := discoveryConfig()
+	if err := store.ApplyConfig(t.Context(), config); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1000, 0)
+	api := cpapi.New(store, cpapi.WithClock(fixedClock{now: now}))
+	assertDiscovery(t, api, "?region=a", http.StatusServiceUnavailable, nil)
+
+	voter := cpconfig.GroupMember{PeerID: 1, NodeID: "a1", Address: "a1:9000", RaftAddress: "http://a1:9001/raft", Voter: true}
+	first := cpconfig.GroupMembership{GroupID: "a0", Region: "a", ReporterID: 1, Index: 10, Members: []cpconfig.GroupMember{voter}}
+	second := first
+	second.GroupID, second.PartitionID = "a1", 1
+	reportDiscoveryMembership(t, store, now, 3, first, second)
+	assertDiscovery(t, api, "?region=a", http.StatusOK, []discoveryTarget{target("a1")})
+	reopened := openDiscoveryStore(t, path, config)
+	assertDiscovery(t, cpapi.New(reopened), "?region=a", http.StatusOK, []discoveryTarget{target("a1")})
 }
 
 func TestStorageDiscoveryRetainsAppliedMembershipAndRecoversAfterRestart(t *testing.T) {
