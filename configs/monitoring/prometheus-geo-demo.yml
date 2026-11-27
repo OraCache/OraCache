@@ -17,19 +17,13 @@ scrape_configs:
       - targets: ["api-gateway-b:9466"]
         labels: {region: region-b}
   - job_name: storage-node
-    honor_labels: true
-    static_configs:
-      - targets: ["a-1:28191"]
-        labels: {region: region-a, node_id: a-1}
-      - targets: ["a-2:28191"]
-        labels: {region: region-a, node_id: a-2}
-      - targets: ["a-3:28191"]
-        labels: {region: region-a, node_id: a-3}
-      - targets: ["b-1:28191"]
-        labels: {region: region-b, node_id: b-1}
-      - targets: ["b-2:28191"]
-        labels: {region: region-b, node_id: b-2}
-      - targets: ["b-3:28191"]
-        labels: {region: region-b, node_id: b-3}
-      - targets: ["a-4:28191"]
-        labels: {region: region-a, node_id: a-4}
+    metrics_path: /metrics
+    follow_redirects: false
+    http_sd_configs:
+      - url: http://cp-api:9464/discovery/storage-nodes?region=region-a
+        refresh_interval: 2s
+      - url: http://cp-api:9464/discovery/storage-nodes?region=region-b
+        refresh_interval: 2s
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: exported_(node_id|region)

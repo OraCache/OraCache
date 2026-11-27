@@ -44,9 +44,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.cp
-    command: [/cp-api, --config=/replication-config.json, --listen=0.0.0.0:28081, --metrics-listen=0.0.0.0:9464]
+    command: [/cp-api, --config=/replication-config.json, --listen=0.0.0.0:28081, --metrics-listen=0.0.0.0:9464, --membership-state=/state/membership.json]
     volumes:
       - ./configs/cp-replication-compose.json:/replication-config.json:ro
+      - cp-membership:/state
   api-gateway:
     <<: *app
     depends_on: [cp-api]
@@ -113,3 +114,6 @@ services:
     volumes:
       - ./configs/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./configs/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  cp-membership:

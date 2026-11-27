@@ -170,8 +170,8 @@ func TestStagedGeoDemo(t *testing.T) {
 	prom := port("prometheus", "9090") + "/api/v1/"
 	wantHealth := map[string]string{
 		"cp-api:9464": "up", "api-gateway:9466": "up",
-		"api-gateway-b:9466": "down", "a-4:28191": "down",
-		"a-1:28191": "up", "a-2:28191": "up", "a-3:28191": "up",
+		"api-gateway-b:9466": "down",
+		"a-1:28191":          "up", "a-2:28191": "up", "a-3:28191": "up",
 		"b-1:28191": "down", "b-2:28191": "down", "b-3:28191": "down",
 	}
 	checkTargets := func() {
@@ -301,17 +301,17 @@ func TestStagedGeoDemo(t *testing.T) {
 	verifyB("before-b", seed.GetRev())
 	checkOutbox(queries[11][0], "0")
 	waitGeo(t, ctx, "MVP role timeline shows one leader and two followers in each region", func(ctx context.Context) error {
-		roles, err := query(ctx, queries[4][0], "instance")
+		roles, err := query(ctx, queries[4][0], "node_id")
 		if err != nil {
 			return err
 		}
-		if len(roles) != 7 || roles["a-4:28191"] != "-1" {
+		if len(roles) != 6 {
 			return fmt.Errorf("roles: %v", roles)
 		}
 		for _, nodes := range [][]string{aVoters, bNodes} {
 			leaders, followers := 0, 0
 			for _, node := range nodes {
-				switch roles[node+":28191"] {
+				switch roles[node] {
 				case "2":
 					leaders++
 				case "1":
@@ -325,35 +325,47 @@ func TestStagedGeoDemo(t *testing.T) {
 		return nil
 	})
 
-	// A range query sees both pre-start and live states; they must share one series per node.
+	// The range query rounds its end to whole seconds and can lag the instant query.
 	var timeline struct {
 		Data struct {
 			Result []struct{ Metric map[string]string }
 		}
 	}
-	timelineURL := fmt.Sprintf("%squery_range?query=%s&start=%d&end=%d&step=1", prom, url.QueryEscape(queries[4][0]), timelineStart, time.Now().Unix())
-	if err := getJSON(ctx, timelineURL, &timeline); err != nil {
-		t.Fatal(err)
-	}
-	if len(timeline.Data.Result) != 7 {
-		t.Fatalf("MVP role timeline must have one series per node: %+v", timeline.Data.Result)
-	}
+	waitGeo(t, ctx, "MVP role history has one series per node", func(ctx context.Context) error {
+		timelineURL := fmt.Sprintf("%squery_range?query=%s&start=%d&end=%d&step=1", prom, url.QueryEscape(queries[4][0]), timelineStart, time.Now().Unix())
+		if err := getJSON(ctx, timelineURL, &timeline); err != nil {
+			return err
+		}
+		ids := make(map[string]bool)
+		for _, series := range timeline.Data.Result {
+			id := series.Metric["node_id"]
+			if ids[id] || (!slices.Contains(aVoters, id) && !slices.Contains(bNodes, id)) {
+				return fmt.Errorf("unexpected role timeline series: %+v", series.Metric)
+			}
+			ids[id] = true
+		}
+		if len(ids) != len(aVoters)+len(bNodes) {
+			return fmt.Errorf("role history not yet complete: %v", ids)
+		}
+		return nil
+	})
 
 	makeDemo("demo-up-learner")
 	checkRole := func(node, want string) {
 		t.Helper()
 		waitGeo(t, ctx, node+" role "+want, func(ctx context.Context) error {
-			got, err := query(ctx, queries[4][0], "instance")
+			got, err := query(ctx, queries[4][0], "node_id")
 			if err != nil {
 				return err
 			}
-			if got[node+":28191"] != want {
+			if got[node] != want {
 				return fmt.Errorf("roles: %v", got)
 			}
 			return nil
 		})
 	}
-	checkRole("a-4", "4")
+	checkTargets()
+	checkRole("a-4", "")
 	const group, region = "region-a/shard-0/replication-1", "region-a"
 	admin := membership.NewMembershipAdminClient(conn)
 	change := func(req *membership.ChangeMembershipRequest) uint64 {
@@ -388,6 +400,8 @@ func TestStagedGeoDemo(t *testing.T) {
 		}
 		return nil
 	})
+	wantHealth["a-4:28191"] = "up"
+	checkTargets()
 	checkRole("a-4", "3")
 	leader := waitCPRoute(t, ctx, routes, "").Write[0].NodeID
 	peer := slices.Index(aVoters, leader) + 1
@@ -395,6 +409,9 @@ func TestStagedGeoDemo(t *testing.T) {
 		t.Fatalf("unknown A leader %q", leader)
 	}
 	run("kill", "-s", "SIGKILL", leader)
+	wantHealth[leader+":28191"] = "down"
+	checkTargets()
+	checkRole(leader, "-1")
 	successor := waitCPRoute(t, ctx, routes, leader).Write[0].NodeID
 	waitGeo(t, ctx, "successor serves the original revision", func(ctx context.Context) error {
 		return read(ctx, cache, "before-b", seed.GetRev(), successor)
@@ -421,7 +438,9 @@ func TestStagedGeoDemo(t *testing.T) {
 		return fmt.Errorf("membership: %v", m)
 	})
 	checkRole("a-4", "1")
-	checkRole(leader, "-1")
+	delete(wantHealth, leader+":28191")
+	checkTargets()
+	checkRole(leader, "")
 	afterReplace := put("after-replace", afterKill.GetRev())
 	verifyB("after-replace", afterReplace.GetRev())
 	checkOutbox(queries[11][0], "0")

@@ -107,6 +107,8 @@ demo-build:
 
 demo-up: demo-build
 	$(DEMO) up -d --no-build --no-recreate
+	$(call demo-wait-route,api-gateway,write,.write_routes["0"].NodeID // "" | length > 0)
+	$(call demo-wait-route,api-gateway-b,local read,.read_routes["0"].Region == "region-b" and (.read_routes["0"].NodeID // "" | length > 0))
 
 define demo-wait-route
 	@command -v curl >/dev/null && command -v jq >/dev/null || { echo '$@ requires curl and jq' >&2; exit 1; }

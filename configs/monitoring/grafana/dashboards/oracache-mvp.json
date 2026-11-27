@@ -436,11 +436,6 @@
                   "text": "Learner",
                   "color": "purple",
                   "index": 4
-                },
-                "4": {
-                  "text": "Не в Raft",
-                  "color": "gray",
-                  "index": 5
                 }
               }
             }
@@ -451,8 +446,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max by (instance, region) (\n  ((3 * max by (instance, region) (oracache_raft_is_learner == 1) or on (instance) (4 + max by (instance, region) (oracache_raft_is_voter == 0))) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (2 * max by (instance, region) (oracache_raft_leader_at_max_term == 1) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (max by (instance, region) (oracache_raft_is_follower == 1) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (0 * (up{job=\"storage-node\"} == 1))\n  or on (instance) (-1 + 0 * (up{job=\"storage-node\"} == 0))\n)",
-          "legendFormat": "{{region}} · {{instance}}",
+          "expr": "oracache_raft_replica_state",
+          "legendFormat": "{{region}} · {{node_id}}",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
