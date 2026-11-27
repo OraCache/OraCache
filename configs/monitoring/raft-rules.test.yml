@@ -175,3 +175,41 @@ tests:
         exp_samples:
           - labels: 'oracache_raft_replica_state{node_id="current", region="a", partition="0"}'
             value: 2
+  - name: CP outage preserves the last complete membership without reviving a removed replica
+    interval: 1m
+    input_series:
+      - series: 'up{job="cp-api",instance="cp-api:9464"}'
+        values: '1 _ 1 0 0'
+      - series: 'go_info{job="cp-api",instance="cp-api:9464",version="go1.25.0"}'
+        values: '1 1 _ stale _'
+      - series: 'oracache_cp_raft_member{job="cp-api",instance="cp-api:9464",node_id="current",region="a",partition="0"}'
+        values: '1 1 _ stale _'
+      - series: 'oracache_cp_raft_member{job="cp-api",instance="cp-api:9464",node_id="removed",region="a",partition="0"}'
+        values: '1 stale _ _ _'
+      - series: 'up{job="storage-node",instance="current",node_id="current",region="a"}'
+        values: '1 1 1 1 0'
+      - series: 'oracache_raft_is_follower{job="storage-node",instance="current",node_id="current",region="a",partition="0"}'
+        values: '1 1 1 1 stale'
+      - series: 'up{job="storage-node",instance="removed",node_id="removed",region="a"}'
+        values: '1 1 1 1 1'
+      - series: 'oracache_raft_is_follower{job="storage-node",instance="removed",node_id="removed",region="a",partition="0"}'
+        values: '1 1 1 1 1'
+    promql_expr_test:
+      - expr: oracache_raft_replica_state
+        eval_time: 3m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="current",region="a",partition="0"}'
+            value: 1
+      - expr: oracache_raft_replica_state
+        eval_time: 4m
+        exp_samples:
+          - labels: 'oracache_raft_replica_state{node_id="current",region="a",partition="0"}'
+            value: -1
+      - expr: oracache_raft_membership_fresh
+        eval_time: 4m
+        exp_samples:
+          - labels: 'oracache_raft_membership_fresh{region="a",partition="0"}'
+            value: 0
+      - expr: oracache_raft_replica_state
+        eval_time: 18m
+        exp_samples: []

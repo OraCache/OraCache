@@ -14,7 +14,7 @@
         "label": "Регион матрицы",
         "type": "query",
         "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
-        "query": "label_values(oracache_cp_raft_membership_fresh,region)",
+        "query": "label_values(oracache_raft_membership_fresh,region)",
         "refresh": 2,
         "sort": 1,
         "multi": false,
@@ -25,7 +25,7 @@
         "label": "Партиция матрицы",
         "type": "query",
         "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
-        "query": "label_values(oracache_cp_raft_membership_fresh{region=\"${raft_region}\"},partition)",
+        "query": "label_values(oracache_raft_membership_fresh{region=\"${raft_region}\"},partition)",
         "refresh": 2,
         "sort": 3,
         "multi": false,
@@ -319,7 +319,7 @@
       },
       "options": {"colorMode":"value","graphMode":"none","textMode":"value"},
       "targets": [
-        {"refId":"A","expr":"min(oracache_cp_raft_membership_fresh{job=\"cp-api\",region=\"${raft_region}\",partition=~\"${raft_partition:regex}\"} and on(job,instance) (up{job=\"cp-api\"} == 1)) or on() vector(-1)","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":true,"range":false}
+        {"refId":"A","expr":"min(oracache_raft_membership_fresh{region=\"${raft_region}\",partition=~\"${raft_partition:regex}\"}) or on() vector(-1)","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":true,"range":false}
       ]
     },
     {

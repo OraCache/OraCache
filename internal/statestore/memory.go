@@ -3,7 +3,6 @@ package statestore
 import (
 	"context"
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 	"sync"
@@ -25,6 +24,9 @@ type MemoryStore struct {
 	heartbeats         map[string]Heartbeat
 	memberships        map[groupKey]cpconfig.GroupMembership
 	membershipFile     string
+	membershipVersion  uint64
+	checkpointMu       sync.Mutex
+	checkpointVersion  uint64
 	bootstrapDiscovery bool
 	receipts           map[heartbeatSource]heartbeatReceiptTime // keys are the configured node-region pairs
 	snapshot           Snapshot
@@ -125,16 +127,9 @@ func (s *MemoryStore) UpsertHeartbeat(ctx context.Context, heartbeat Heartbeat) 
 		updates[key] = copyOf
 	}
 	for key, m := range updates {
-		if s.membershipFile != "" && m.Index > s.memberships[key].Index {
-			next := maps.Clone(s.memberships)
-			maps.Copy(next, updates)
-			if err := writeMemberships(s.membershipFile, next); err != nil {
-				return 0, err
-			}
-			break
+		if m.Index > s.memberships[key].Index {
+			s.membershipVersion++
 		}
-	}
-	for key, m := range updates {
 		s.memberships[key] = m
 	}
 	s.heartbeats[heartbeat.NodeID] = CloneHeartbeat(heartbeat)
@@ -212,23 +207,11 @@ func (s *MemoryStore) ApplyConfig(ctx context.Context, config *cpconfig.Config) 
 			return fmt.Errorf("%w: have %d, got %d", cpconfig.ErrPartitionCountChanged, s.snapshot.Config.PartitionCount, config.PartitionCount)
 		}
 	}
-	var obsolete []groupKey
 	for key, m := range s.memberships {
 		if assignment, ok := config.Assignment(key.region, key.partition); !ok || (assignment.GroupID != "" && assignment.GroupID != m.GroupID) {
-			obsolete = append(obsolete, key)
+			delete(s.memberships, key)
+			s.membershipVersion++
 		}
-	}
-	if s.membershipFile != "" && len(obsolete) > 0 {
-		next := maps.Clone(s.memberships)
-		for _, key := range obsolete {
-			delete(next, key)
-		}
-		if err := writeMemberships(s.membershipFile, next); err != nil {
-			return err
-		}
-	}
-	for _, key := range obsolete {
-		delete(s.memberships, key)
 	}
 	// Keep receipt times only for pairs present in both configurations.
 	receipts := make(map[heartbeatSource]heartbeatReceiptTime, len(config.Nodes))
@@ -258,6 +241,10 @@ func (s *MemoryStore) LiveConfig(ctx context.Context, now time.Time, ttl time.Du
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.liveConfigLocked(now, ttl), nil
+}
+
+func (s *MemoryStore) liveConfigLocked(now time.Time, ttl time.Duration) Snapshot {
 	view := projectLiveConfig(s.snapshot, s.memberships, func(node cpconfig.Node) replicaHeartbeat {
 		heartbeat, ok := s.heartbeats[node.ID]
 		received := ok && heartbeat.Region == node.Region
@@ -268,7 +255,7 @@ func (s *MemoryStore) LiveConfig(ctx context.Context, now time.Time, ttl time.Du
 		}
 	})
 	view.BootstrapDiscovery = s.bootstrapDiscovery
-	return view, nil
+	return view
 }
 
 func sameMembership(a, b cpconfig.GroupMembership) bool {

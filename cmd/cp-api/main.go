@@ -89,8 +89,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	store, err := statestore.OpenMemory(*membershipFile)
 	if err != nil {
-		logger.Error("open Raft membership state", "error", err)
-		os.Exit(1)
+		logger.Warn("storage discovery waiting for Raft membership after checkpoint error", "error", err)
 	}
 	revision := uint64(0)
 	if *devCluster {

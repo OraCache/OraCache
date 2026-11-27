@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/cpmetrics"
@@ -50,7 +51,7 @@ func (s *Server) StorageDiscovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	region := query.Get("region")
-	view, err := s.discoverySnapshot(r.Context())
+	view, err := s.storageTargetsSnapshot(r.Context())
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "read storage discovery snapshot", "error", err)
 		http.Error(w, "storage discovery unavailable", http.StatusServiceUnavailable)
@@ -74,6 +75,17 @@ func (s *Server) StorageDiscovery(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(targets); err != nil {
 		s.log.DebugContext(r.Context(), "write storage discovery", "error", err)
 	}
+}
+
+// Stores with persistent discovery state can checkpoint the snapshot before it
+// goes to Prometheus. Regular CP metrics and GetConfig use the live view.
+func (s *Server) storageTargetsSnapshot(ctx context.Context) (statestore.Snapshot, error) {
+	if source, ok := s.store.(interface {
+		DiscoveryConfig(context.Context, time.Time, time.Duration) (statestore.Snapshot, error)
+	}); ok {
+		return source.DiscoveryConfig(ctx, s.clock.Now().UTC(), s.nodeTTL)
+	}
+	return s.discoverySnapshot(ctx)
 }
 
 func (s *Server) discoverySnapshot(ctx context.Context) (statestore.Snapshot, error) {

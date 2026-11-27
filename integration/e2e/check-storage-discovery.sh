@@ -173,8 +173,10 @@ await targets "length == 3 and all(.[]; .node != \"node-$old_id\")"
 await grafana_query "$matrix" "length == 3 and all(.[]; .labels.node_id != \"node-$old_id\")"
 
 compose stop cp-api >&2
-await grafana_query "$fresh" 'length == 1 and .[0].value == "-1"'
+await prom_query 'up{job="cp-api"}' 'length == 1 and .[0].value == "0"' >/dev/null
+await grafana_query "$fresh" 'length == 1 and .[0].value == "0"'
 await targets "length == 3 and all(.[]; .node != \"node-$old_id\")" >/dev/null
+await grafana_query "$matrix" "length == 3 and all(.[]; .labels.node_id != \"node-$old_id\")"
 # Freeze Raft before restarting CP so no heartbeat can hide a bootstrap regression.
 compose pause node-1 node-2 node-3 node-4 >&2
 compose start cp-api >&2

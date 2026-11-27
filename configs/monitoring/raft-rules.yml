@@ -1,14 +1,42 @@
 groups:
   - name: ora-raft
     rules:
+      # Match only members from the final successful CP scrape, so a previously
+      # removed member cannot reappear when CP is temporarily unreachable.
+      # Use a metric in CP's response as the scrape timestamp reference: the
+      # synthetic up sample can have a different timestamp.
+      - record: oracache_cp_raft_member_seen_at_seconds
+        expr: timestamp(oracache_cp_raft_member{job="cp-api"})
+      - record: oracache_cp_last_successful_scrape_at_seconds
+        expr: max by (job, instance) (timestamp(go_info{job="cp-api"}))
+      - record: oracache_raft_known_member
+        expr: |
+          oracache_cp_raft_member{job="cp-api"}
+          or (
+            (
+              0 * (
+                last_over_time(oracache_cp_raft_member_seen_at_seconds[15m])
+                == on (job, instance) group_left
+                last_over_time(oracache_cp_last_successful_scrape_at_seconds[15m])
+              ) + 1
+            )
+            unless on (job, instance) (up{job="cp-api"} == 1)
+          )
+      - record: oracache_raft_membership_fresh
+        expr: |
+          min by (region, partition) (
+            oracache_cp_raft_membership_fresh{job="cp-api"}
+            and on (job, instance) (up{job="cp-api"} == 1)
+          )
+          or (0 * max by (region, partition) (oracache_raft_known_member))
       # Keep the legacy term signal in groups where CP has no membership yet.
       - record: oracache_raft_member_term
         expr: |
           oracache_raft_term
-          and on (region, partition, node_id) oracache_cp_raft_member{job="cp-api"}
+          and on (region, partition, node_id) oracache_raft_known_member
           or (
             oracache_raft_term
-            unless on (region, partition) oracache_cp_raft_member{job="cp-api"}
+            unless on (region, partition) oracache_raft_known_member
           )
       - record: oracache_raft_leader_at_max_term
         expr: |
@@ -48,9 +76,9 @@ groups:
             )
             and on (job, instance) (up{job="storage-node"} == 1)
           )
-          and on (region, partition, node_id) oracache_cp_raft_member{job="cp-api"}
+          and on (region, partition, node_id) oracache_raft_known_member
           or (
-            -1 * max by (region, partition, node_id) (oracache_cp_raft_member{job="cp-api"})
+            -1 * max by (region, partition, node_id) (oracache_raft_known_member)
             and on (region, node_id) (max by (region, node_id) (up{job="storage-node"}) == 0)
           )
-          or (0 * max by (region, partition, node_id) (oracache_cp_raft_member{job="cp-api"}))
+          or (0 * max by (region, partition, node_id) (oracache_raft_known_member))
