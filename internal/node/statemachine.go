@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/replication"
@@ -27,8 +28,9 @@ import (
 // reused, but not dense per key. expected_rev follows the protobuf contract
 // (0 means "key must not exist").
 type StateMachine struct {
-	s           *store.Store
-	replication *replication.State
+	s             *store.Store
+	replication   *replication.State
+	outboxPending atomic.Int64
 }
 
 var _ shardraft.StateMachine = (*StateMachine)(nil)
@@ -77,6 +79,7 @@ func (m *StateMachine) Put(_ context.Context, r *pb.PutRequest, _ ...grpc.CallOp
 		if err := m.replication.Enqueue(r.Key); err != nil {
 			return nil, err
 		}
+		m.outboxPending.Store(int64(m.replication.Pending()))
 		return &pb.PutResponse{Status: pb.PutStatus_PUT_STATUS_OK, Rev: res.Rev}, nil
 	case store.PutConflict:
 		return &pb.PutResponse{Status: pb.PutStatus_PUT_STATUS_CONFLICT, Rev: res.Rev}, nil
@@ -96,6 +99,7 @@ func (m *StateMachine) Delete(_ context.Context, r *pb.DeleteRequest, _ ...grpc.
 		if err := m.replication.Enqueue(r.Key); err != nil {
 			return nil, err
 		}
+		m.outboxPending.Store(int64(m.replication.Pending()))
 		return &pb.DeleteResponse{Status: pb.DeleteStatus_DELETE_STATUS_DELETED}, nil
 	}
 	return &pb.DeleteResponse{Status: pb.DeleteStatus_DELETE_STATUS_NOT_FOUND}, nil
@@ -141,6 +145,7 @@ func (m *StateMachine) Restore(data []byte) error {
 		return err
 	}
 	m.replication = restored
+	m.outboxPending.Store(int64(restored.Pending()))
 	return nil
 }
 

@@ -25,7 +25,8 @@ func newRaftMetrics(reg prometheus.Registerer, n *Node) *raftMetrics {
 		gauges: []*prometheus.Desc{
 			prometheus.NewDesc("oracache_raft_is_leader", "Replica reports its local role as leader.", nil, labels),
 			prometheus.NewDesc("oracache_raft_is_follower", "Replica reports its local role as follower.", nil, labels),
-			prometheus.NewDesc("oracache_raft_is_learner", "Replica is a Raft learner.", nil, labels),
+			prometheus.NewDesc("oracache_raft_is_learner", "Running replica is a learner in its applied Raft configuration.", nil, labels),
+			prometheus.NewDesc("oracache_raft_is_voter", "Running replica is a voter in its applied Raft configuration.", nil, labels),
 			prometheus.NewDesc("oracache_raft_has_leader", "Replica has a leader ID in its local Raft snapshot.", nil, labels),
 			prometheus.NewDesc("oracache_raft_ready", "Running replica knows a leader and has applied through its local commit index.", nil, labels),
 			prometheus.NewDesc("oracache_raft_term", "Term in the local Raft snapshot.", nil, labels),
@@ -65,6 +66,7 @@ func (m *raftMetrics) Collect(ch chan<- prometheus.Metric) {
 		boolGauge(s.Running && s.Role == "StateLeader"),
 		boolGauge(s.Running && s.Role == "StateFollower" && !s.IsLearner),
 		boolGauge(s.Running && s.IsLearner),
+		boolGauge(s.Running && s.Member),
 		boolGauge(s.Running && s.LeaderID != 0),
 		boolGauge(s.Ready),
 		float64(s.Term), float64(s.CommitIndex), float64(s.AppliedIndex), float64(s.SnapshotIndex), float64(s.LastIndex),
@@ -86,3 +88,18 @@ func (m *raftMetrics) ObserveDuration(stage shardraft.TimingStage, duration time
 }
 
 func (m *raftMetrics) RecordSendError() { m.sendErrors.Inc() }
+
+func registerOutboxMetrics(reg prometheus.Registerer, cfg Config, limit int, sm *StateMachine) {
+	labels := prometheus.Labels{
+		"node_id": cfg.NodeID, "region": cfg.Region, "partition": strconv.FormatUint(uint64(cfg.ShardID), 10),
+		"target_region": cfg.Replication.TargetRegion,
+	}
+	reg.MustRegister(
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "oracache_replication_outbox_pending", Help: "Pending replication entries on this source replica.", ConstLabels: labels,
+		}, func() float64 { return float64(sm.outboxPending.Load()) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "oracache_replication_outbox_limit", Help: "Maximum pending replication entries on this source replica.", ConstLabels: labels,
+		}, func() float64 { return float64(limit) }),
+	)
+}

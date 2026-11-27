@@ -1,13 +1,12 @@
 name: oracache-replication
 
-x-image: &image
+# E2E sets ORACACHE_REPLICATION_PORT=0 to let Docker allocate every published port.
+x-app: &app
   image: ${ORACACHE_CP_IMAGE:-oracache-cp:local}
-  build:
-    context: .
-    dockerfile: Dockerfile.cp
+  pull_policy: never
 
 x-a: &a
-  <<: *image
+  <<: *app
   depends_on: [cp-api]
   entrypoint:
     - /storage-node
@@ -23,7 +22,7 @@ x-a: &a
     - --replication-target-region=region-b
 
 x-b: &b
-  <<: *image
+  <<: *app
   depends_on: [cp-api]
   entrypoint:
     - /storage-node
@@ -41,10 +40,30 @@ x-b: &b
 
 services:
   cp-api:
-    <<: *image
-    command: [/cp-api, --config=/replication-config.json, --listen=0.0.0.0:28081, --metrics-listen=none]
+    <<: *app
+    build:
+      context: .
+      dockerfile: Dockerfile.cp
+    command: [/cp-api, --config=/replication-config.json, --listen=0.0.0.0:28081, --metrics-listen=0.0.0.0:9464]
     volumes:
       - ./configs/cp-replication-compose.json:/replication-config.json:ro
+  api-gateway:
+    <<: *app
+    depends_on: [cp-api]
+    command:
+      - /api-gateway
+      - --region=region-a
+      - --node-id=gw-a
+      - --cp-addr=cp-api:28081
+      - --listen=0.0.0.0:28080
+      - --status-listen=0.0.0.0:9466
+      - --poll-interval=1s
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-38080}:28080", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-39466}:9466"]
+  api-gateway-b:
+    <<: *app
+    depends_on: [cp-api]
+    command: [/api-gateway, --region=region-b, --node-id=gw-b, --cp-addr=cp-api:28081, --listen=0.0.0.0:28080, --status-listen=0.0.0.0:9466, --poll-interval=1s]
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-39080}:28080", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-39066}:9466"]
   a-1:
     <<: *a
     command: [--node-id=a-1, --peer-id=1]
@@ -57,15 +76,40 @@ services:
     <<: *a
     command: [--node-id=a-3, --peer-id=3]
     ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-28093}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-28193}:28191"]
+  a-4:
+    <<: *a
+    profiles: [learner]
+    command: [--node-id=a-4, --peer-id=4, --join, "--peer=4,a-4,a-4:28091,http://a-4:28191/raft"]
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-38194}:28191"]
   b-1:
     <<: *b
     command: [--node-id=b-1, --peer-id=1]
     ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-29091}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-29191}:28191"]
+
   b-2:
     <<: *b
     command: [--node-id=b-2, --peer-id=2]
     ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-29092}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-29192}:28191"]
+
   b-3:
     <<: *b
     command: [--node-id=b-3, --peer-id=3]
     ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-29093}:28091", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-29193}:28191"]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-39090}:9090"]
+    volumes:
+      - ./configs/monitoring/prometheus-geo-demo.yml:/etc/prometheus/prometheus.yml:ro
+      - ./configs/monitoring/raft-rules.yml:/etc/prometheus/raft-rules.yml:ro
+  grafana:
+    image: grafana/grafana:12.3.0
+    depends_on: [prometheus]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/oracache-mvp.json
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-33000}:3000"]
+    volumes:
+      - ./configs/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./configs/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro

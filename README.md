@@ -1,5 +1,47 @@
 # OraCache
 
+## Демо MVP: два региона
+
+Из корня репозитория, с Docker Compose и `make`:
+
+```sh
+make demo-up
+```
+
+[Grafana](http://127.0.0.1:33000/d/oracache-mvp) показывает трафик и доступность по регионам, роли Raft и длину outbox A → B. Gateway A — `127.0.0.1:38080` (запись и чтение), Gateway B — `127.0.0.1:39080` (чтение). Дождись маршрута записи на [Gateway A](http://127.0.0.1:39466/routes).
+
+Очистка: `make demo-down`. Данные в памяти; не запускай остановленный voter заново с тем же ID в живой группе.
+
+### Поэтапный показ
+
+Начни с пустого стенда (нужны `curl` и `jq`). `make demo-up-a` дождётся маршрута записи в A, а `make demo-up-b` — маршрута чтения в B. Между этими командами запиши ключ:
+
+```sh
+make demo-up-a
+export ORACACHE_ENDPOINT=127.0.0.1:38080
+go run ./cmd/oracache put demo:geo before-b --expected-rev=0
+make demo-up-b
+ORACACHE_ENDPOINT=127.0.0.1:39080 go run ./cmd/oracache get demo:geo
+```
+
+Если B ещё догоняет, повтори GET. Проверь `HIT`, исходную ревизию и `servedBy.instance=b-*`; очередь должна опустеть.
+
+```sh
+make demo-up-learner
+GROUP=region-a/shard-0/replication-1
+go run ./cmd/oracache membership add-learner --group-id="$GROUP" --region=region-a --operation-id=add-a4 --peer-id=4 --node-id=a-4 --address=a-4:28091 --raft-address=http://a-4:28191/raft
+curl -fsS http://127.0.0.1:38194/status
+```
+
+Убедись, что `a-4` стала learner и её `AppliedIndex` дошёл до индекса добавления. Найди лидера A на таймлайне Grafana и останови его, например `make demo-stop-node ID=a-3`. Дождись нового лидера, прочитай контрольный ключ и запиши новое значение через тот же Gateway A. Затем замени погибшего voter на `a-4` (ниже `3` — пример ID погибшего лидера):
+
+```sh
+go run ./cmd/oracache membership replace --group-id="$GROUP" --region=region-a --operation-id=replace-dead --old-peer-id=3 --learner-id=4
+go run ./cmd/oracache membership get --group-id="$GROUP" --region=region-a
+```
+
+Проверь, что `a-4` стала voter, старый ID удалён, а новая запись после замены снова доходит в B. Автоматический сценарий входит в `make test-e2e`.
+
 ## PoC с Control Plane и Gateway
 
 Локальный стенд: три ноды хранилища в одной группе Raft, Control Plane и API Gateway. Клиент обращается к gateway на `127.0.0.1:28080`.

@@ -35,13 +35,139 @@
   },
   "panels": [
     {
+      "id": 8,
+      "title": "Gateway доступен",
+      "description": "1 — Prometheus опрашивает Gateway; это не проверка маршрута.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (region) (up{job=\"api-gateway\"})",
+          "legendFormat": "{{region}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Ноды доступны",
+      "description": "Число нод, которые Prometheus успешно опрашивает.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (region) (up{job=\"storage-node\"})",
+          "legendFormat": "{{region}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Ноды готовы по Raft",
+      "description": "Локальная готовность нод: знают лидера и применили локальный commit. Не проверка межрегиональной доставки.",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (region) (oracache_raft_ready and on (instance) (up{job=\"storage-node\"} == 1)) or (0 * sum by (region) (up{job=\"storage-node\"}))",
+          "legendFormat": "{{region}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
       "id": 1,
       "type": "timeseries",
       "title": "Завершённые RPC на Gateway",
       "description": "Запросы, завершённые обработчиком Gateway (GET, PUT, DELETE), окно 10 с. gRPC OK — транспортный статус: MISS и конфликт версии не равны успешному попаданию или записи.",
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 4,
         "w": 8,
         "h": 7
       },
@@ -62,8 +188,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\"}[10s]))",
-          "legendFormat": "{{operation}} · Все",
+          "expr": "sum by (region, operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\"}[10s]))",
+          "legendFormat": "{{region}} · {{operation}} · Все",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -74,8 +200,8 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",grpc_code=\"OK\"}[10s]))",
-          "legendFormat": "{{operation}} · gRPC OK",
+          "expr": "sum by (region, operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",grpc_code=\"OK\"}[10s]))",
+          "legendFormat": "{{region}} · {{operation}} · gRPC OK",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -102,7 +228,7 @@
       "description": "Завершённые RPC с кодом не OK, окно 10 с. Не включает доменные исходы с кодом OK и запросы, не дошедшие до Gateway.",
       "gridPos": {
         "x": 8,
-        "y": 0,
+        "y": 4,
         "w": 8,
         "h": 7
       },
@@ -123,8 +249,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",grpc_code!=\"OK\"}[10s]))",
-          "legendFormat": "{{operation}}",
+          "expr": "sum by (region, operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",grpc_code!=\"OK\"}[10s]))",
+          "legendFormat": "{{region}} · {{operation}}",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -148,7 +274,7 @@
       "id": 7,
       "gridPos": {
         "x": 16,
-        "y": 0,
+        "y": 4,
         "w": 8,
         "h": 7
       },
@@ -183,8 +309,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",operation=\"get\",grpc_code=\"OK\",outcome=\"hit\"}[10s])) / (sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",operation=\"get\",grpc_code=\"OK\",outcome=~\"hit|miss|version_not_found\"}[10s])) > 0)",
-          "legendFormat": "GET hit rate",
+          "expr": "sum by (region, operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",operation=\"get\",grpc_code=\"OK\",outcome=\"hit\"}[10s])) / (sum by (region, operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",operation=\"get\",grpc_code=\"OK\",outcome=~\"hit|miss|version_not_found\"}[10s])) > 0)",
+          "legendFormat": "{{region}} · GET hit rate",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -202,7 +328,7 @@
       "description": "p95/p99 по всем завершённым RPC, включая ошибки, окно 10 с. Это время на сервере, не задержка клиента.",
       "gridPos": {
         "x": 0,
-        "y": 7,
+        "y": 11,
         "w": 12,
         "h": 7
       },
@@ -223,8 +349,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[10s]))) >= 0",
-          "legendFormat": "{{operation}} · p95",
+          "expr": "histogram_quantile(0.95, sum by (region, operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[10s]))) >= 0",
+          "legendFormat": "{{region}} · {{operation}} · p95",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -235,8 +361,8 @@
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.99, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[10s]))) >= 0",
-          "legendFormat": "{{operation}} · p99",
+          "expr": "histogram_quantile(0.99, sum by (region, operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[10s]))) >= 0",
+          "legendFormat": "{{region}} · {{operation}} · p99",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -263,7 +389,7 @@
       "description": "Лидер определяется по наблюдаемому максимальному term. Роль follower не зависит от готовности или отставания применения. «Роль не определена» возможна при выборах или отсутствии метрик роли. Роль не доказывает кворум или доступность маршрута. Пропуски не заполняются.",
       "gridPos": {
         "x": 12,
-        "y": 7,
+        "y": 11,
         "w": 12,
         "h": 7
       },
@@ -305,6 +431,16 @@
                   "text": "Лидер",
                   "color": "green",
                   "index": 3
+                },
+                "3": {
+                  "text": "Learner",
+                  "color": "purple",
+                  "index": 4
+                },
+                "4": {
+                  "text": "Не в Raft",
+                  "color": "gray",
+                  "index": 5
                 }
               }
             }
@@ -315,8 +451,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(2 * max by (instance) (oracache_raft_leader_at_max_term == 1) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (max by (instance) (oracache_raft_is_follower == 1) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (0 * max by (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (-1 + 0 * max by (instance) (up{job=\"storage-node\"} == 0))",
-          "legendFormat": "{{instance}}",
+          "expr": "max by (instance, region) (\n  ((3 * max by (instance, region) (oracache_raft_is_learner == 1) or on (instance) (4 + max by (instance, region) (oracache_raft_is_voter == 0))) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (2 * max by (instance, region) (oracache_raft_leader_at_max_term == 1) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (max by (instance, region) (oracache_raft_is_follower == 1) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (0 * (up{job=\"storage-node\"} == 1))\n  or on (instance) (-1 + 0 * (up{job=\"storage-node\"} == 0))\n)",
+          "legendFormat": "{{region}} · {{instance}}",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -339,11 +475,11 @@
     {
       "id": 5,
       "type": "table",
-      "title": "Итоги выбранного интервала",
+      "title": "Итоги выбранного интервала · оба региона",
       "description": "Выбери интересующий интервал. Счётчики Prometheus экстраполируются по scrape. p95/p99 — время обработчика Gateway, включая ошибки, не задержка клиента.",
       "gridPos": {
         "x": 0,
-        "y": 14,
+        "y": 18,
         "w": 16,
         "h": 5
       },
@@ -461,13 +597,74 @@
       "description": "Отмечаются оператором, а не вычисляются из успешных RPC.",
       "gridPos": {
         "x": 16,
-        "y": 14,
+        "y": 18,
         "w": 8,
         "h": 5
       },
       "options": {
         "mode": "markdown",
         "content": "- До отказа: запиши контрольный ключ и версию.\n- После: прочитай **ту же версию** и запиши новое значение через тот же Gateway.\n- Отметь остановку и первую успешную запись аннотациями."
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Outbox: ожидают подтверждения",
+      "description": "Записи, для которых A ещё не применил ACK. Данные только с лидера исходной группы. Без лидера показаний нет.",
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 24,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "unit": "short",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (region, target_region, partition) (oracache_replication_outbox_pending and on (instance, region, partition) (oracache_raft_leader_at_max_term == 1))",
+          "legendFormat": "{{region}} → {{target_region}} · p{{partition}} · Ожидают",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (region, target_region, partition) (oracache_replication_outbox_limit and on (instance, region, partition) (oracache_raft_leader_at_max_term == 1))",
+          "legendFormat": "{{region}} → {{target_region}} · p{{partition}} · Лимит",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
       }
     }
   ]

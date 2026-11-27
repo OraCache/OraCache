@@ -104,7 +104,7 @@ func newReplicationStack(t *testing.T) *replicationStack {
 	})
 	if err := stack.WithEnv(map[string]string{
 		"ORACACHE_CP_IMAGE": image, "ORACACHE_REPLICATION_PORT": "0",
-	}).Up(ctx, compose.Wait(true)); err != nil {
+	}).Up(ctx, compose.Wait(true), compose.RunServices("cp-api", "a-1", "a-2", "a-3", "b-1", "b-2", "b-3")); err != nil {
 		t.Fatalf("compose up: %v", err)
 	}
 	s := &replicationStack{t: t, ctx: ctx, docker: docker, stack: stack}
