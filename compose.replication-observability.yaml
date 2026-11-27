@@ -6,16 +6,8 @@ services:
       - cp-membership:/state
 
   prometheus:
-    extends:
-      file: compose.cp-observability.yaml
-      service: prometheus
     volumes:
       - ./configs/monitoring/prometheus-replication.yml:/etc/prometheus/prometheus.yml:ro
-
-  grafana:
-    extends:
-      file: compose.cp-observability.yaml
-      service: grafana
 
 volumes:
   cp-membership:

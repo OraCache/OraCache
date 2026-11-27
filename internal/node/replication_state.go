@@ -24,6 +24,7 @@ func (m *StateMachine) AckOutbox(req *pb.AckOutboxRequest) (*pb.AckOutboxRespons
 	if err := m.replication.Acknowledge(req.Id); err != nil {
 		return nil, err
 	}
+	m.outboxPending.Store(int64(m.replication.Pending()))
 	return &pb.AckOutboxResponse{}, nil
 }
 

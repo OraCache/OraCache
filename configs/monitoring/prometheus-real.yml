@@ -13,6 +13,7 @@ scrape_configs:
   - job_name: api-gateway
     static_configs:
       - targets: ["api-gateway:9466"]
+        labels: {region: region-a}
   - job_name: storage-node
     metrics_path: /metrics
     follow_redirects: false

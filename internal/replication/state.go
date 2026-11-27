@@ -88,6 +88,9 @@ func (s *State) Configured() bool {
 	return s.data.Identity.Region != ""
 }
 
+// Pending returns the number of entries not yet acknowledged on the source.
+func (s *State) Pending() int { return len(s.data.Outbox) }
+
 func (s *State) CanWrite() error {
 	if s.Config().SourceRegion != "" {
 		return status.Error(codes.FailedPrecondition, "replica region rejects client writes")

@@ -1,5 +1,53 @@
 # OraCache
 
+## Демо MVP: два региона
+
+Из корня репозитория, с Docker Compose, `make`, `curl` и `jq`:
+
+```sh
+make demo-up
+```
+
+`make demo-up` ждёт маршрут записи в A и локальный маршрут чтения в B. После успешного завершения можно отправлять запросы через Gateway. Проверка не ждёт готовности Grafana или завершения репликации в B.
+
+[Grafana](http://127.0.0.1:33000/d/oracache-mvp) показывает трафик и доступность по регионам, роли Raft и длину outbox A → B. Gateway A: `127.0.0.1:38080` (запись и чтение). Gateway B: `127.0.0.1:39080` (чтение).
+
+Prometheus получает список storage-нод из Control Plane отдельно для A и B. [Targets](http://127.0.0.1:39090/targets) показывают, с каких нод он собирает метрики. Если CP недоступен, Prometheus продолжит опрашивать известные ноды, но на таймлайне ролей появится пробел: без CP Grafana не знает состав группы.
+
+Очистка: `make demo-down` удаляет и том с последним известным составом Raft. Данные кэша в памяти; не запускай остановленный voter заново с тем же ID в живой группе.
+
+### Поэтапный показ
+
+Начни с пустого стенда (нужны `curl` и `jq`). `make demo-up-a` дождётся маршрута записи в A, а `make demo-up-b` — маршрута чтения в B. Между этими командами запиши ключ:
+
+```sh
+make demo-up-a
+export ORACACHE_ENDPOINT=127.0.0.1:38080
+go run ./cmd/oracache put demo:geo before-b --expected-rev=0
+make demo-up-b
+ORACACHE_ENDPOINT=127.0.0.1:39080 go run ./cmd/oracache get demo:geo
+```
+
+Если B ещё догоняет, повтори GET. Проверь `HIT`, исходную ревизию и `servedBy.instance=b-*`; очередь должна опустеть.
+
+```sh
+make demo-up-learner
+GROUP=region-a/shard-0/replication-1
+go run ./cmd/oracache membership add-learner --group-id="$GROUP" --region=region-a --operation-id=add-a4 --peer-id=4 --node-id=a-4 --address=a-4:28091 --raft-address=http://a-4:28191/raft
+curl -fsS http://127.0.0.1:38194/status
+```
+
+`make demo-up-learner` только запускает процесс. В Targets и на таймлайне `a-4` появится после `add-learner`.
+
+Убедись, что `a-4` стала learner и её `AppliedIndex` дошёл до индекса добавления. Найди лидера A на таймлайне Grafana и останови его, например `make demo-stop-node ID=a-3`. Дождись нового лидера, прочитай контрольный ключ и запиши новое значение через тот же Gateway A. Затем замени погибшего voter на `a-4` (ниже `3` — пример ID погибшего лидера):
+
+```sh
+go run ./cmd/oracache membership replace --group-id="$GROUP" --region=region-a --operation-id=replace-dead --old-peer-id=3 --learner-id=4
+go run ./cmd/oracache membership get --group-id="$GROUP" --region=region-a
+```
+
+Остановленный voter остаётся на таймлайне как «Нет scrape», пока он в составе. После `replace` проверь, что `a-4` стала voter, старая нода исчезла из текущих целей, а новая запись снова доходит в B. Автоматический сценарий входит в `make test-e2e`.
+
 ## PoC с Control Plane и Gateway
 
 Локальный стенд: три ноды хранилища в одной группе Raft, Control Plane и API Gateway. Клиент обращается к gateway на `127.0.0.1:28080`.

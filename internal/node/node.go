@@ -154,6 +154,9 @@ func New(cfg Config) (*Node, error) {
 	metrics.RegisterProcessCollectors()
 	raftMetrics := newRaftMetrics(metrics.Prometheus(), n)
 	sm := NewStateMachine(n.store, replState)
+	if rc.TargetRegion != "" {
+		registerOutboxMetrics(metrics.Prometheus(), cfg, replState.Config().OutboxLimit, sm)
+	}
 	n.inst, err = shardraft.NewInstance(shardraft.Config{
 		RegionID: cfg.Region, ShardID: cfg.ShardID, GroupID: cfg.GroupID,
 		PeerID: cfg.PeerID, Peers: raftPeers, Join: cfg.Join, ReadMode: cfg.ReadMode,
