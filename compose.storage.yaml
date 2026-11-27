@@ -1,6 +1,7 @@
 name: oracache-storage
 
 x-storage: &storage
+  image: ${ORACACHE_STORAGE_IMAGE:-oracache-storage:local}
   build:
     context: .
     dockerfile: Dockerfile.storage
