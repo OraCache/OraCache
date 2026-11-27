@@ -2,7 +2,9 @@
 
 ## Демо MVP: два региона
 
-Из корня репозитория, с Docker Compose, `make`, `curl` и `jq`:
+Выполняйте команды демо из корня проекта. `make build` складывает бинарники в `bin/`, CLI запускается как `./bin/oracache`. [Пошаговые сценарии](docs/mvp-demo/README.md)
+
+Для запуска двухрегионального стенда нужны Docker Compose, `make`, `curl` и `jq`.
 
 ```sh
 make demo-up
@@ -139,10 +141,8 @@ GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
 локальные порты через переменные окружения.
 
 ```sh
-export ORACACHE_CP_PORT=28080 ORACACHE_CP_STATUS_PORT=9466
-export ORACACHE_PROMETHEUS_PORT=9090 ORACACHE_GRAFANA_PORT=3000
 docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml up -d --build
-curl -fsS "http://127.0.0.1:${ORACACHE_CP_STATUS_PORT}/routes"
+curl -fsS http://127.0.0.1:9466/routes
 ```
 
 Дождитесь маршрута для партиции `0` и выполните команды GET, PUT и DELETE из
