@@ -106,6 +106,60 @@ curl -fsS "http://127.0.0.1:${ORACACHE_CP_STATUS_PORT}/routes"
 - [Дашборд реального кластера](http://127.0.0.1:3000/d/oracache-real-cluster)
 - [Цели сбора Prometheus](http://127.0.0.1:9090/targets)
 
+#### Обнаружение Storage Node
+
+Prometheus запрашивает `GET /discovery/storage-nodes?region=region-a` у CP API.
+Лидер сообщает через heartbeat полный применённый состав своей Raft-группы.
+После `membership add-learner` CP публикует новую ноду как цель сбора.
+Для сбора используется схема и `host:port` из `raft_address`, путь всегда
+`/metrics`. В конфигурации запуска CP начальные ноды используют поле
+`nodes[].raft_address`. Объявленный адрес должен быть доступен из сети
+Prometheus. Применённый состав включает learner и outgoing voter в joint
+configuration. Нода остаётся целью при потере heartbeat, пока входит хотя бы
+в одну отслеживаемую группу.
+
+При первом запуске профиля CP создаёт `/state/membership.json` в томе
+`cp-membership` и использует bootstrap-адреса групп, которые ещё не
+отчитались. После перезапуска CP восстанавливает применённый состав из
+файла. Если состав хотя бы одной группы в запрошенной области неизвестен
+или адрес цели некорректен, CP отвечает `503`. Работающий Prometheus
+сохраняет предыдущие цели. При одновременном холодном старте Prometheus
+получает сохранённые или первоначальные цели с первым успешным ответом.
+Если CP восстанавливается без известного состава области, новый Prometheus
+ждёт отчёта лидера. `200 []` означает известную область без целей.
+Без `--membership-state` CP при каждом запуске ждёт отчётов Raft.
+
+Храните том вместе с жизненным циклом группы. Для новой группы с нуля
+используйте новый `group_id` или новый том при полном сбросе стенда.
+Один экземпляр CP владеет файлом. Границу доверия, правила проверки
+адресов и поведение при отказах описывает [ADR-005](docs/ADR-005-storage-discovery.md).
+
+```sh
+docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml \
+  exec -T prometheus wget -qO- 'http://cp-api:9464/discovery/storage-nodes?region=region-a'
+curl -fsS "http://127.0.0.1:${ORACACHE_PROMETHEUS_PORT:-9090}/api/v1/targets" |
+  jq '.data.activeTargets[] | select(.labels.job == "storage-node") | {labels, scrapeUrl, health}'
+```
+
+Двухрегиональный профиль опрашивает A и B независимо.
+
+```sh
+docker compose -f compose.replication.yaml -f compose.replication-observability.yaml up -d --build
+```
+
+Проверка изменения состава поднимает отдельные Docker-проекты со свободными
+портами. Она запускает новую ноду, вызывает `membership` через Gateway и
+проверяет ответы CP, цели Prometheus и запросы панелей Grafana.
+
+```sh
+mkdir -p .reports
+integration/e2e/check-storage-discovery.sh > .reports/storage-discovery.log 2>&1
+GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
+  -run '^TestMembershipThroughGatewayAndCPProjection$'
+```
+
+#### Проверка доступности и отказов
+
 Скрипт повторяет чистый запуск и три отказных сценария на отдельных проектах
 со свободными портами. Он требует Docker Compose, Go, `curl` и `jq`, выполняет
 RPC с дедлайном 3 с и выводит ответы и значения метрик для отчёта.
@@ -150,7 +204,8 @@ prom_query 'oracache_raft_replica_state'
 | `oracache_gateway_forward_attempts_total` | Число запущенных исходящих RPC. `reason` выделяет первый вызов, фактический повтор после NOT_LEADER и повтор чтения после временной ошибки. Batch RPC видны в пересылке. |
 | `oracache_cp_rpc_duration_seconds` | Время обработчиков `ReportHeartbeat` и `GetConfig` в секундах. Счётчик гистограммы растёт при heartbeat и опросе. |
 | `oracache_gateway_config_refresh_total`, `oracache_gateway_config_last_success_timestamp_seconds`, `oracache_gateway_config_revision` | Результаты опроса и применения карты, Unix-время последнего принятого ответа и ревизия применённой карты. Ответ с прежней ревизией подтверждает связь с CP. Сверьте ревизию с `/routes`. |
-| `oracache_raft_{is_leader,is_follower,has_leader,ready,term,commit_index,applied_index,snapshot_index,last_index}` | Признаки 0/1, терм и позиции в записях лога из одного `Status()` на scrape. Запись продвигает commit и applied. Конец лога включает незакоммиченные записи. Индекс снапшота до первого чекпоинта равен 0. |
+| `oracache_raft_{is_leader,is_follower,is_learner,has_leader,ready,term,commit_index,applied_index,snapshot_index,last_index}` | Признаки 0/1, терм и позиции в записях лога из одного `Status()` на scrape. Запись продвигает commit и applied. Конец лога включает незакоммиченные записи. Индекс снапшота до первого чекпоинта равен 0. |
+| `oracache_cp_raft_member`, `oracache_cp_raft_membership_fresh` | Участники применённого состава и его свежесть: 1 — подтверждён текущим лидером, 0 — последний известный, -1 — неизвестен. |
 | `oracache_raft_stage_duration_seconds`, `oracache_raft_transport_send_errors_total` | Время выполнения команды в apply, ожидания результата ReadIndex до ожидания локального apply, кодирования чекпоинта и восстановления Store, в секундах. ReadIndex учитывает полученные результаты. Счётчик отправок учитывает ошибки вызова транспорта. Проверьте `_count` после GET/PUT, после чекпоинта и при установке снапшота. |
 | `process_cpu_seconds_total`, `process_resident_memory_bytes`, `go_memstats_heap_alloc_bytes`, `go_goroutines` | CPU-время процесса, RSS, занятый Go heap и число горутин. `rate(process_cpu_seconds_total[1m])` даёт занятые ядра. CPU и RSS проверены в Linux-контейнерах и могут отсутствовать при запуске на macOS. |
 | `oracache_storage_keys`, `oracache_storage_accounted_bytes` | `Store.Stats()` на каждой реплике даёт число ключей и байты, списанные из бюджета Store. Эти байты показаны отдельно от RSS. Сверьте изменение после PUT и DELETE. |
@@ -165,13 +220,13 @@ scrape. При неизвестном или неоднозначном лиде
 
 В «Ролях реплик по партициям» выберите «Регион матрицы» и, если нужно,
 конкретную «Партицию матрицы». `All` показывает все партиции выбранного
-региона. Строки таблицы — партиции, столбцы — ноды этого региона.
-Пагинация под таблицей переключает только страницы строк. `L` означает одного
-наблюдаемого лидера в максимальном терме, `F` — follower, `?` —
-лидерство не подтверждено, `↓` — пропал сигнал от реплики, которую
-Prometheus видел за последние 5 минут. `—` означает отсутствие данных о
-реплике в этой ячейке. Для проверки запланированных назначений используйте
-`cp-topology status` в профиле с etcd.
+региона. Строки таблицы — партиции, столбцы — подтверждённые участники.
+`Leader` означает единственного наблюдаемого лидера в максимальном терме.
+`Follower` и `Learner` показывают роль живой реплики. `Down` означает
+`up=0`, `Unknown` — роль ещё неизвестна. При удалении участник исчезает
+из текущего состава, а его собранные ранее метрики доступны в истории
+Prometheus до окончания срока хранения. Соседняя панель показывает свежесть
+состава для выбранных партиций.
 
 #### Ожидаемые сигналы при отказах
 
@@ -183,9 +238,8 @@ Prometheus видел за последние 5 минут. `—` означае
 
 `up` описывает доступность scrape. Ready и известный лидер показывают
 локальное состояние реплики. Доступность записи проверяется подтверждением
-реального PUT с дедлайном. Стенд покрывает одну группу в одном регионе и
-MemoryStore. WAN, WAL, TTL, AddNode и доля устаревших ответов остаются
-вне покрытия этого стенда со строгим GET. При повторном запуске процесс Storage Node начинает с
+реального PUT с дедлайном. Однорегиональный профиль использует MemoryStore
+с чекпоинтом состава в CP. При повторном запуске Storage Node начинает с
 пустой памятью. Восстановление прежнего участника Raft требует персистентного
 состояния Storage Node (#108).
 
@@ -197,7 +251,7 @@ docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.y
 
 ```sh
 docker run --rm --entrypoint /bin/promtool -v "$PWD/configs/monitoring:/checks:ro" -w /checks \
-  prom/prometheus:v3.5.0 check config prometheus.yml prometheus-real.yml
+  prom/prometheus:v3.5.0 check config prometheus.yml prometheus-real.yml prometheus-replication.yml
 docker run --rm --entrypoint /bin/promtool -v "$PWD/configs/monitoring:/checks:ro" -w /checks \
   prom/prometheus:v3.5.0 test rules raft-rules.test.yml
 ```

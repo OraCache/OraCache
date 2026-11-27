@@ -14,7 +14,7 @@
         "label": "Регион матрицы",
         "type": "query",
         "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
-        "query": "label_values(oracache_raft_replica_state,region)",
+        "query": "label_values(oracache_cp_raft_membership_fresh,region)",
         "refresh": 2,
         "sort": 1,
         "multi": false,
@@ -25,7 +25,7 @@
         "label": "Партиция матрицы",
         "type": "query",
         "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
-        "query": "label_values(oracache_raft_replica_state{region=\"${raft_region}\"},partition)",
+        "query": "label_values(oracache_cp_raft_membership_fresh{region=\"${raft_region}\"},partition)",
         "refresh": 2,
         "sort": 3,
         "multi": false,
@@ -48,7 +48,7 @@
       "id": 2,
       "type": "stat",
       "title": "Цели сбора",
-      "description": "Доступность HTTP scrape по каждой из пяти целей.",
+      "description": "Доступность HTTP scrape по каждой цели.",
       "gridPos": {"x":0,"y":1,"w":12,"h":7},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {"defaults":{"unit":"none","noValue":"Нет данных","mappings":[{"type":"value","options":{"0":{"text":"Недоступен","color":"red"},"1":{"text":"Доступен","color":"green"}}}]},"overrides":[]},
@@ -279,15 +279,15 @@
       "id": 33,
       "type": "table",
       "title": "Роли реплик по партициям · ${raft_region}",
-      "description": "Каждая строка — партиция выбранного региона. L — один наблюдаемый лидер в максимальном терме; F — нода сообщает роль follower; ? — роль лидера не подтверждена или идёт переизбрание; ↓ — нет свежего сигнала от реплики, замеченной за последние 5 минут; — — данных о реплике для этой пары нет.",
-      "gridPos": {"x":0,"y":59,"w":24,"h":8},
+      "description": "Строки — партиции выбранного региона, столбцы — участники последнего применённого состава Raft. Down означает, что Prometheus не смог опросить участника. Unknown означает, что роль пока неизвестна.",
+      "gridPos": {"x":0,"y":59,"w":18,"h":8},
       "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "noValue": "—",
           "mappings": [
-            {"type":"value","options":{"-1":{"text":"↓","color":"#803640"},"0":{"text":"?","color":"#704b21"},"1":{"text":"F","color":"#284e82"},"2":{"text":"L","color":"#246444"}}},
+            {"type":"value","options":{"-1":{"text":"Down","color":"#803640"},"0":{"text":"Unknown","color":"#704b21"},"1":{"text":"Follower","color":"#284e82"},"2":{"text":"Leader","color":"#246444"},"3":{"text":"Learner","color":"#6245aa"}}},
             {"type":"special","options":{"match":"null","result":{"text":"—","color":"#26292e"}}}
           ],
           "custom": {"cellOptions":{"type":"color-background","mode":"basic"},"align":"center","minWidth":85}
@@ -302,6 +302,24 @@
       ],
       "targets": [
         {"refId":"A","expr":"oracache_raft_replica_state{region=\"${raft_region}\",partition=~\"${raft_partition:regex}\"}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"format":"table","instant":true,"range":false}
+      ]
+    },
+    {
+      "id": 34,
+      "type": "stat",
+      "title": "Свежесть состава Raft",
+      "description": "Состояние наименее свежей партиции в выбранном фильтре. Устаревший состав сохраняется до нового подтверждения лидером.",
+      "gridPos": {"x":18,"y":59,"w":6,"h":8},
+      "datasource": {"type":"prometheus","uid":"oracache-prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{"type":"value","options":{"-1":{"text":"Неизвестно","color":"gray"},"0":{"text":"Устарел","color":"orange"},"1":{"text":"Подтверждён","color":"green"}}}]
+        },
+        "overrides": []
+      },
+      "options": {"colorMode":"value","graphMode":"none","textMode":"value"},
+      "targets": [
+        {"refId":"A","expr":"min(oracache_cp_raft_membership_fresh{job=\"cp-api\",region=\"${raft_region}\",partition=~\"${raft_partition:regex}\"} and on(job,instance) (up{job=\"cp-api\"} == 1)) or on() vector(-1)","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":true,"range":false}
       ]
     },
     {

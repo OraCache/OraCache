@@ -3,6 +3,7 @@ package statestore
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"sync"
@@ -13,17 +14,20 @@ import (
 
 // MemoryStore — in-memory Store для CP Phase 1 и тестов.
 //
-// Он не durable: рестарт CP API теряет heartbeat и последний config snapshot.
+// Рестарт CP API теряет heartbeat и последний config snapshot.
+// OpenMemory can checkpoint the applied Raft membership independently.
 // В production должен использоваться etcd-backed StateStore, описанный в
 // docs/architecture/ARCHITECTURE.md §7.1.
 //
 // TODO(phase-3): заменить на etcd-backed Store, сохранив стабильную границу API.
 type MemoryStore struct {
-	mu          sync.RWMutex
-	heartbeats  map[string]Heartbeat
-	memberships map[groupKey]cpconfig.GroupMembership
-	receipts    map[heartbeatSource]heartbeatReceiptTime // keys are the configured node-region pairs
-	snapshot    Snapshot
+	mu                 sync.RWMutex
+	heartbeats         map[string]Heartbeat
+	memberships        map[groupKey]cpconfig.GroupMembership
+	membershipFile     string
+	bootstrapDiscovery bool
+	receipts           map[heartbeatSource]heartbeatReceiptTime // keys are the configured node-region pairs
+	snapshot           Snapshot
 }
 
 type groupKey struct {
@@ -121,6 +125,16 @@ func (s *MemoryStore) UpsertHeartbeat(ctx context.Context, heartbeat Heartbeat) 
 		updates[key] = copyOf
 	}
 	for key, m := range updates {
+		if s.membershipFile != "" && m.Index > s.memberships[key].Index {
+			next := maps.Clone(s.memberships)
+			maps.Copy(next, updates)
+			if err := writeMemberships(s.membershipFile, next); err != nil {
+				return 0, err
+			}
+			break
+		}
+	}
+	for key, m := range updates {
 		s.memberships[key] = m
 	}
 	s.heartbeats[heartbeat.NodeID] = CloneHeartbeat(heartbeat)
@@ -198,10 +212,23 @@ func (s *MemoryStore) ApplyConfig(ctx context.Context, config *cpconfig.Config) 
 			return fmt.Errorf("%w: have %d, got %d", cpconfig.ErrPartitionCountChanged, s.snapshot.Config.PartitionCount, config.PartitionCount)
 		}
 	}
+	var obsolete []groupKey
 	for key, m := range s.memberships {
 		if assignment, ok := config.Assignment(key.region, key.partition); !ok || (assignment.GroupID != "" && assignment.GroupID != m.GroupID) {
-			delete(s.memberships, key)
+			obsolete = append(obsolete, key)
 		}
+	}
+	if s.membershipFile != "" && len(obsolete) > 0 {
+		next := maps.Clone(s.memberships)
+		for _, key := range obsolete {
+			delete(next, key)
+		}
+		if err := writeMemberships(s.membershipFile, next); err != nil {
+			return err
+		}
+	}
+	for _, key := range obsolete {
+		delete(s.memberships, key)
 	}
 	// Keep receipt times only for pairs present in both configurations.
 	receipts := make(map[heartbeatSource]heartbeatReceiptTime, len(config.Nodes))
@@ -231,7 +258,7 @@ func (s *MemoryStore) LiveConfig(ctx context.Context, now time.Time, ttl time.Du
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return projectLiveConfig(s.snapshot, s.memberships, func(node cpconfig.Node) replicaHeartbeat {
+	view := projectLiveConfig(s.snapshot, s.memberships, func(node cpconfig.Node) replicaHeartbeat {
 		heartbeat, ok := s.heartbeats[node.ID]
 		received := ok && heartbeat.Region == node.Region
 		return replicaHeartbeat{
@@ -239,7 +266,9 @@ func (s *MemoryStore) LiveConfig(ctx context.Context, now time.Time, ttl time.Du
 			received:  received,
 			live:      received && now.Sub(heartbeat.ReceivedAt) <= ttl,
 		}
-	}), nil
+	})
+	view.BootstrapDiscovery = s.bootstrapDiscovery
+	return view, nil
 }
 
 func sameMembership(a, b cpconfig.GroupMembership) bool {

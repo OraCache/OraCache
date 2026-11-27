@@ -25,6 +25,7 @@ func newRaftMetrics(reg prometheus.Registerer, n *Node) *raftMetrics {
 		gauges: []*prometheus.Desc{
 			prometheus.NewDesc("oracache_raft_is_leader", "Replica reports its local role as leader.", nil, labels),
 			prometheus.NewDesc("oracache_raft_is_follower", "Replica reports its local role as follower.", nil, labels),
+			prometheus.NewDesc("oracache_raft_is_learner", "Replica is a Raft learner.", nil, labels),
 			prometheus.NewDesc("oracache_raft_has_leader", "Replica has a leader ID in its local Raft snapshot.", nil, labels),
 			prometheus.NewDesc("oracache_raft_ready", "Running replica knows a leader and has applied through its local commit index.", nil, labels),
 			prometheus.NewDesc("oracache_raft_term", "Term in the local Raft snapshot.", nil, labels),
@@ -62,7 +63,8 @@ func (m *raftMetrics) Collect(ch chan<- prometheus.Metric) {
 	stats := m.replica.Store().Stats()
 	for i, value := range [...]float64{
 		boolGauge(s.Running && s.Role == "StateLeader"),
-		boolGauge(s.Running && s.Role == "StateFollower"),
+		boolGauge(s.Running && s.Role == "StateFollower" && !s.IsLearner),
+		boolGauge(s.Running && s.IsLearner),
 		boolGauge(s.Running && s.LeaderID != 0),
 		boolGauge(s.Ready),
 		float64(s.Term), float64(s.CommitIndex), float64(s.AppliedIndex), float64(s.SnapshotIndex), float64(s.LastIndex),

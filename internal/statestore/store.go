@@ -97,6 +97,12 @@ type Snapshot struct {
 	// MissingReplicaHeartbeats indicates that some configured, non-draining replicas
 	// have never reported to this store. It is only populated by LiveConfig.
 	MissingReplicaHeartbeats bool
+	// AppliedMemberships is the last accepted membership of each observed Raft
+	// group. LiveConfig populates it independently of any bootstrap membership.
+	AppliedMemberships []cpconfig.GroupMembership
+	// BootstrapDiscovery allows initial scrape targets for groups that have yet
+	// to report. A restarted store with unknown membership must wait for Raft.
+	BootstrapDiscovery bool
 }
 
 // Store — граница состояния Control Plane, используемая CP API. Production-

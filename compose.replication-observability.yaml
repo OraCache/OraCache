@@ -1,0 +1,21 @@
+# Add to compose.replication.yaml to discover each region independently.
+services:
+  cp-api:
+    command: [/cp-api, --config=/replication-config.json, --listen=0.0.0.0:28081, --metrics-listen=0.0.0.0:9464, --membership-state=/state/membership.json]
+    volumes:
+      - cp-membership:/state
+
+  prometheus:
+    extends:
+      file: compose.cp-observability.yaml
+      service: prometheus
+    volumes:
+      - ./configs/monitoring/prometheus-replication.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    extends:
+      file: compose.cp-observability.yaml
+      service: grafana
+
+volumes:
+  cp-membership:
